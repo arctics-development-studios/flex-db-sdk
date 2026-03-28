@@ -1,0 +1,22 @@
+# Build output — committed to git only for debugging; never edit manually
+dist/
+
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# npm pack dry-run artifacts
+*.tgz

@@ -1,0 +1,53 @@
+{
+  "name": "flex-db-sdk",
+  "version": "1.0.0",
+  "description": "Type-safe, zero-dependency SDK for Flex-DB — optimised for edge and long-running servers.",
+  "author": "Arctics Development Studios",
+  "license": "Apache-2.0",
+  "type": "module",
+
+  "main":  "./dist/index.js",
+  "types": "./dist/index.d.ts",
+
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types":  "./dist/index.d.ts"
+    }
+  },
+
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+
+  "scripts": {
+    "build":          "tsc",
+    "build:watch":    "tsc --watch",
+    "typecheck":      "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+
+  "keywords": ["flex-db", "sdk", "key-value", "edge", "cloudflare", "vercel", "deno", "transfer dataabse", "modern database", "application state"],
+  "repository": {
+    "type": "git",
+    "url":  "https://github.com/YOUR_ORG/flexdb-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YOUR_ORG/flexdb-sdk/issues"
+  },
+  "homepage": "https://github.com/YOUR_ORG/flexdb-sdk#readme",
+
+  "engines": {
+    "node": ">=18.0.0"
+  },
+
+  "publishConfig": {
+    "access": "public"
+  }
+}
