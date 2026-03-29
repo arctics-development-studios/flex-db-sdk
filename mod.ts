@@ -5,11 +5,11 @@
 
 // ── Client ─────────────────────────────────────────────────────────────────
 
-export { FlexDBClient, NamespacedClient } from "./client.ts";
+export { FlexDBClient, NamespacedClient } from "./src/client.ts";
 
 // ── Factory (recommended entry-point) ─────────────────────────────────────
 
-export { createClient } from "./create-client.ts";
+export { createClient } from "./src/create-client.ts";
 
 // ── Pagination ─────────────────────────────────────────────────────────────
 
@@ -19,8 +19,8 @@ export {
   paginateListHydrated,
   paginateSearch,
   paginateSearchHydrated,
-} from "./paginator.ts";
-export type { Page } from "./paginator.ts";
+} from "./src/paginator.ts";
+export type { Page } from "./src/paginator.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -50,8 +50,8 @@ export type {
   ListIdsResult,
   ListItemsResult,
   ListResult,
-} from "./types.ts";
+} from "./src/types.ts";
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 
-export { FlexDBError, FlexDBNetworkError } from "./types.ts";
+export { FlexDBError, FlexDBNetworkError } from "./src/types.ts";
