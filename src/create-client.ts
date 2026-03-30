@@ -1,3 +1,22 @@
+/**
+ * Factory function for creating a {@link FlexDBClient} instance.
+ *
+ * This is the recommended entry-point for the FlexDB SDK.
+ * Import `createClient` from the root package rather than this module directly.
+ *
+ * @example
+ * ```ts
+ * import { createClient } from "@arctics/flex-db-sdk";
+ *
+ * const db = createClient({
+ *   apiKey:  Deno.env.get("FLEXDB_API_KEY")!,
+ *   baseUrl: "https://eu.flex.arctics.dev",
+ * });
+ * ```
+ *
+ * @module
+ */
+
 // ─────────────────────────────────────────────
 //  FlexDB SDK · createClient
 //  Recommended way to initialise the SDK.
@@ -8,48 +27,60 @@ import { FlexDBClient } from "./client.ts";
 import type { FlexDBClientOptions } from "./types.ts";
 
 /**
- * Creates and returns a `FlexDBClient` instance.
+ * Creates and returns a {@link FlexDBClient} instance.
  *
- * This is the recommended way to set up the SDK.
- * Call it once (e.g. in a module-level singleton) and reuse the client
- * across requests for maximum performance — especially important in
- * long-running servers and edge runtimes where cold-start cost matters.
+ * This is the **recommended** way to initialise the SDK. Call it once —
+ * ideally at module scope — and reuse the same client across all requests.
+ * A singleton client maximises TCP keep-alive reuse and avoids unnecessary
+ * overhead in long-running servers and edge runtimes.
  *
  * ---
  *
- * **Retry behaviour**
+ * ### Retry behaviour
  *
  * By default the client retries failed requests up to **3 times** with a
- * **10 ms** delay between attempts. You can customise or disable this:
- *
- * ```ts
- * // Custom retry
- * createClient({ ..., retry: { times: 5, delay: 50 } });
- *
- * // Disable retries entirely
- * createClient({ ..., retry: false });
- * ```
- *
- * Retries only trigger for transient errors (network failures, HTTP 429, 5xx).
- * Client errors (4xx) are thrown immediately without retrying.
+ * **10 ms** delay between attempts. Only transient errors are retried:
+ * network failures, HTTP `429`, and HTTP `5xx`. Client errors (`4xx`) and
+ * aborted requests are thrown immediately.
  *
  * ---
  *
- * @example — Basic setup
+ * @param options - Configuration for the client. See {@link FlexDBClientOptions}.
+ * @returns A fully-configured {@link FlexDBClient} ready to use.
+ *
+ * @example Basic setup
  * ```ts
- * import { createClient } from "flexdb-sdk";
+ * import { createClient } from "@arctics/flex-db-sdk";
  *
  * const db = createClient({
- *   apiKey:    process.env.FLEXDB_API_KEY!,
+ *   apiKey:    Deno.env.get("FLEXDB_API_KEY")!,
  *   baseUrl:   "https://eu.flex.arctics.dev",
- *   namespace: "users",          // optional default namespace
+ *   namespace: "users", // optional default namespace
  * });
  *
  * const { key }  = await db.create({ name: "Alice", age: 30 });
  * const { item } = await db.get(key);
  * ```
  *
- * @example — Namespace binding
+ * @example Custom retry
+ * ```ts
+ * const db = createClient({
+ *   apiKey:  Deno.env.get("FLEXDB_API_KEY")!,
+ *   baseUrl: "https://eu.flex.arctics.dev",
+ *   retry:   { times: 5, delay: 50 },
+ * });
+ * ```
+ *
+ * @example Disable retries entirely
+ * ```ts
+ * const db = createClient({
+ *   apiKey:  Deno.env.get("FLEXDB_API_KEY")!,
+ *   baseUrl: "https://eu.flex.arctics.dev",
+ *   retry:   false,
+ * });
+ * ```
+ *
+ * @example Namespace binding
  * ```ts
  * const users    = db.namespace("users");
  * const products = db.namespace("products");
@@ -58,12 +89,14 @@ import type { FlexDBClientOptions } from "./types.ts";
  * await products.create({ title: "Widget" }, { searchParams: { price: 9.99 } });
  * ```
  *
- * @example — Edge / serverless (one instance per module)
+ * @example Singleton for edge / serverless (recommended pattern)
  * ```ts
- * // lib/db.ts — import this everywhere
+ * // lib/db.ts — import this everywhere instead of calling createClient repeatedly
+ * import { createClient } from "@arctics/flex-db-sdk";
+ *
  * export const db = createClient({
- *   apiKey:  process.env.FLEXDB_API_KEY!,
- *   baseUrl: process.env.FLEXDB_URL!,
+ *   apiKey:  Deno.env.get("FLEXDB_API_KEY")!,
+ *   baseUrl: Deno.env.get("FLEXDB_URL")!,
  * });
  * ```
  */

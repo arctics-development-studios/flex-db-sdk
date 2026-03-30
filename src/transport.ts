@@ -1,3 +1,13 @@
+/**
+ * Zero-dependency HTTP transport layer for the FlexDB SDK.
+ *
+ * Handles URL construction, request serialisation, retry logic,
+ * and error wrapping. Not intended for direct use — all public
+ * functionality is exposed through {@link FlexDBClient}.
+ *
+ * @module
+ */
+
 // ─────────────────────────────────────────────
 //  FlexDB SDK · HTTP Transport
 //  Zero-dependency fetch wrapper with retry, error
@@ -8,27 +18,57 @@ import { FlexDBError, FlexDBNetworkError, RetryConfig } from "./types.ts";
 
 // ── Internal request shape ─────────────────────────────────────────────────
 
+/**
+ * Internal descriptor for a single HTTP request.
+ * Consumed by {@link request} — not part of the public API.
+ */
 export interface RequestOptions {
+  /** HTTP method for this request. */
   method: "GET" | "POST" | "PUT" | "DELETE";
+  /** Path appended to the client's `baseUrl`, e.g. `"/v1/list"`. */
   path: string;
+  /** Additional HTTP headers merged on top of the default `Authorization` and `Content-Type` headers. */
   headers?: Record<string, string>;
+  /** Request body. Serialised to JSON automatically. */
   body?: unknown;
+  /** Query-string parameters. `undefined` values are omitted. */
   query?: Record<string, string | number | boolean | undefined>;
+  /** Optional `AbortSignal` for cancellation. */
   signal?: AbortSignal;
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────────
 
+/**
+ * Default {@link RetryConfig} applied when no `retry` option is passed to
+ * {@link createClient}.
+ *
+ * - `times: 3` — up to 3 retries after the first failure
+ * - `delay: 10` — 10 ms between attempts
+ */
 export const DEFAULT_RETRY: RetryConfig = { times: 3, delay: 10 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Clamps retry `times` to [0, 10]. */
+/**
+ * Clamps retry `times` to the inclusive range `[0, 10]`.
+ *
+ * @param n - Raw retry count from user config.
+ * @returns Clamped integer value.
+ */
 function clampRetryTimes(n: number): number {
   return Math.min(Math.max(Math.floor(n), 0), 10);
 }
 
-/** Builds the final URL, appending a query string when needed. */
+/**
+ * Constructs the full request URL by joining `baseUrl` and `path`,
+ * then appending a query string from `query` (if any non-`undefined` entries exist).
+ *
+ * @param baseUrl - Client base URL (trailing slash stripped).
+ * @param path    - API path, e.g. `"/v1/list"`.
+ * @param query   - Optional query parameters. `undefined` values are skipped.
+ * @returns Fully-formed URL string.
+ */
 function buildUrl(baseUrl: string, path: string, query?: Record<string, string | number | boolean | undefined>): string {
   // Normalise base: strip trailing slash
   const base = baseUrl.replace(/\/$/, "");
@@ -48,12 +88,24 @@ function buildUrl(baseUrl: string, path: string, query?: Record<string, string |
   return url;
 }
 
-/** Tiny sleep using a Promises — works in every JS environment. */
+/**
+ * Promise-based sleep compatible with every JS runtime.
+ *
+ * @param ms - Duration in milliseconds.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Returns true for status codes that are worth retrying. */
+/**
+ * Returns `true` for HTTP status codes that represent transient server-side
+ * conditions and are worth retrying.
+ *
+ * - `429` — rate limited
+ * - `5xx` — server error
+ *
+ * @param status - HTTP response status code.
+ */
 function isRetryable(status: number): boolean {
   // 429 = rate limit, 5xx = server errors
   return status === 429 || status >= 500;
@@ -62,10 +114,23 @@ function isRetryable(status: number): boolean {
 // ── Core transport ─────────────────────────────────────────────────────────
 
 /**
- * Executes a request with optional retry logic.
- * Returns the parsed JSON response body on success.
- * Throws `FlexDBError` for non-2xx HTTP responses.
- * Throws `FlexDBNetworkError` for connection/network failures.
+ * Executes an HTTP request against the FlexDB API with optional retry logic.
+ *
+ * - Parses the response body as JSON when the server returns `Content-Type: application/json`.
+ * - Returns `undefined` for empty responses (e.g. `204 No Content`).
+ * - Throws {@link FlexDBError} for non-2xx HTTP responses.
+ * - Throws {@link FlexDBNetworkError} when `fetch` itself fails (DNS, connection refused, etc.).
+ * - Aborted requests (`AbortError`) are rethrown immediately without retrying.
+ * - Client errors (`4xx`, excluding `429`) are thrown immediately without retrying.
+ *
+ * @param baseUrl    - Base URL of the FlexDB service.
+ * @param authHeader - Pre-formatted `Authorization` header value, e.g. `"Bearer <token>"`.
+ * @param opts       - Request descriptor. See {@link RequestOptions}.
+ * @param retry      - Retry configuration, or `false` to disable retries entirely.
+ * @returns Parsed JSON response body typed as `T`.
+ *
+ * @throws {@link FlexDBError} When the server returns a non-2xx status.
+ * @throws {@link FlexDBNetworkError} When the underlying `fetch` call throws.
  */
 export async function request<T = unknown>(
   baseUrl: string,
