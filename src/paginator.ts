@@ -1,8 +1,10 @@
 /**
+ * # Pagination
+ *
  * Async-iterable cursor pagination for {@link FlexDBClient.list} and
  * {@link FlexDBClient.search}.
  *
- * The recommended helpers are the four factory functions:
+ * Four factory functions handle the common patterns:
  *
  * | Function | Returns |
  * |---|---|
@@ -11,31 +13,34 @@
  * | {@link paginateSearch} | IDs from `search()` |
  * | {@link paginateSearchHydrated} | Full objects from `search()` |
  *
- * All four return a {@link Paginator} instance you can iterate with `for await`,
- * call `.all()` on to collect every item, or `.forEach()` to process item-by-item.
+ * Each returns a {@link Paginator} instance supporting `for await` iteration,
+ * `.all()` to collect every item, and `.forEach()` for item-by-item processing.
  *
- * @example Iterate pages of IDs
+ * ## Paginate by IDs
+ *
  * ```ts
  * import { paginateList } from "@arctics/flex-db-sdk";
  *
  * for await (const page of paginateList(db, { namespace: "users", limit: 50 })) {
- *   console.log(page.data);    // string[]
+ *   console.log(page.data);    // string[] of IDs
  *   console.log(page.hasMore); // false on the last page
  * }
  * ```
  *
- * @example Collect all IDs at once
- * ```ts
- * const allIds = await paginateList(db, { namespace: "users" }).all();
- * ```
+ * ## Paginate full objects
  *
- * @example Iterate full objects
  * ```ts
  * import { paginateListHydrated } from "@arctics/flex-db-sdk";
  *
  * for await (const page of paginateListHydrated<User>(db, { namespace: "users", limit: 20 })) {
  *   for (const { id, data } of page.data) console.log(id, data?.name);
  * }
+ * ```
+ *
+ * ## Collect everything at once
+ *
+ * ```ts
+ * const allIds = await paginateList(db, { namespace: "users" }).all();
  * ```
  *
  * @module

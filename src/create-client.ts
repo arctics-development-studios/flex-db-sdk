@@ -1,17 +1,23 @@
 /**
- * Factory function for creating a {@link FlexDBClient} instance.
+ * # Client Factory
  *
- * This is the recommended entry-point for the FlexDB SDK.
- * Import `createClient` from the root package rather than this module directly.
+ * Recommended entry-point for creating a FlexDB client instance.
  *
- * @example
+ * The {@link createClient} function is the primary way to initialize the SDK.
+ * Call it once at module scope and reuse the same instance across your application
+ * for maximum performance and connection pooling.
+ *
  * ```ts
  * import { createClient } from "@arctics/flex-db-sdk";
  *
  * const db = createClient({
  *   apiKey:  Deno.env.get("FLEXDB_API_KEY")!,
  *   baseUrl: "https://eu.flex.arctics.dev",
+ *   namespace: "users", // optional default
  * });
+ *
+ * // Use everywhere in your app
+ * export { db };
  * ```
  *
  * @module

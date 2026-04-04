@@ -1,9 +1,21 @@
 /**
- * Core client classes for the FlexDB SDK.
+ * # Core Client
+ *
+ * Primary client implementation for the FlexDB SDK.
  *
  * Use {@link createClient} (from the root module) to instantiate a
- * {@link FlexDBClient}. For namespace-scoped access, call
- * {@link FlexDBClient.namespace} to obtain a {@link NamespacedClient}.
+ * {@link FlexDBClient}. For namespace-scoped operations, call
+ * {@link FlexDBClient.namespace} to create a {@link NamespacedClient}.
+ *
+ * ```ts
+ * import { createClient } from "@arctics/flex-db-sdk";
+ *
+ * const db = createClient({ apiKey: "...", baseUrl: "..." });
+ * const users = db.namespace("users");
+ *
+ * const { key }  = await users.create({ name: "Alice" });
+ * const { item } = await users.get<User>(key);
+ * ```
  *
  * @module
  */

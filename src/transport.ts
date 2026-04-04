@@ -1,11 +1,14 @@
 /**
- * Zero-dependency HTTP transport layer for the FlexDB SDK.
+ * # HTTP Transport
  *
- * Handles URL construction, request serialisation, retry logic,
- * and error wrapping. Not intended for direct use — all public
- * functionality is exposed through {@link FlexDBClient}.
+ * Internal HTTP transport layer for the FlexDB SDK.
+ *
+ * Handles URL construction, request serialisation, retry logic with
+ * exponential backoff, and error wrapping. Not intended for direct public use —
+ * all public functionality is exposed through {@link FlexDBClient}.
  *
  * @module
+ * @internal
  */
 
 // ─────────────────────────────────────────────

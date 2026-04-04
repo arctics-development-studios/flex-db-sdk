@@ -1,8 +1,15 @@
 /**
+ * # Types and Interfaces
+ *
  * All public-facing TypeScript contracts for the FlexDB SDK.
  *
- * This module is re-exported from the root {@link https://jsr.io/@arctics/flex-db-sdk | @arctics/flex-db-sdk}
- * entry-point — you rarely need to import from here directly.
+ * This module is re-exported from the root
+ * {@link https://jsr.io/@arctics/flex-db-sdk | @arctics/flex-db-sdk} package —
+ * you rarely need to import from here directly. Use the main package import instead:
+ *
+ * ```ts
+ * import type { FlexDBClientOptions, Filters } from "@arctics/flex-db-sdk";
+ * ```
  *
  * @module
  */
