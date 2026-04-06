@@ -174,7 +174,7 @@ export interface OperationOptions {
    * const controller = new AbortController();
    * setTimeout(() => controller.abort(), 3_000); // 3 s timeout
    *
-   * const { item } = await db.get("some-key", { signal: controller.signal });
+   * const { data } = await db.get("some-key", { signal: controller.signal });
    * ```
    */
   signal?: AbortSignal;
@@ -185,23 +185,24 @@ export interface OperationOptions {
 /**
  * A flat key-value map of fields to index at write-time.
  *
- * Pass this as `searchParams` when calling {@link FlexDBClient.create} or
- * {@link FlexDBClient.set}. The values are stored in the search index and
+ * Pass this as `metadata` when calling {@link FlexDBClient.create} or
+ * {@link FlexDBClient.set}. The values are stored alongside the object and
  * can later be queried with {@link FlexDBClient.search} using
  * {@link FilterOperators}.
  *
  * All values must be JSON-serialisable primitives or arrays thereof.
+ * Nested objects are not supported as metadata field values.
  *
  * @example
  * ```ts
  * // Index these fields at write-time…
  * await db.create(
  *   { title: "Widget Pro", price: 49.99 },
- *   { searchParams: { price: 49.99, category: "electronics", inStock: true } },
+ *   { metadata: { price: 49.99, category: "electronics", inStock: true } },
  * );
  *
  * // …then filter on them later
- * const { ids } = await db.search({
+ * const { keys } = await db.search({
  *   filters: { price: { lte: 100 }, inStock: { eq: true } },
  * });
  * ```
@@ -228,7 +229,7 @@ export type SearchParams = Record<string, string | number | boolean | null | (st
  *     price:    { gte: 10, lte: 100 },   // range
  *     category: { eq: "electronics" },   // exact match
  *     sku:      { sw: "WIDGET-" },        // starts with
- *     tags:     { inc: "sale" },          // array includes
+ *     tags:     { inc: "sale" },          // array includes / string contains
  *     rating:   { neq: null },            // not null
  *     discount: { ex: true },             // field exists
  *   },
@@ -248,7 +249,7 @@ export interface FilterOperators<T = any> {
   lt?: T;
   /** Less than or equal — equivalent to `field <= value`. */
   lte?: T;
-  /** String contains (substring check) or array includes the given value. */
+  /** String contains (substring check) or array/set includes the given value. */
   inc?: T;
   /** String starts with the given prefix. */
   sw?: T;
@@ -262,8 +263,11 @@ export interface FilterOperators<T = any> {
 /**
  * Typed filter map for {@link FlexDBClient.search}.
  *
- * Each key corresponds to a field you previously indexed via `searchParams`.
+ * Each key corresponds to a metadata field you previously indexed via the
+ * `metadata` option on {@link FlexDBClient.create} or {@link FlexDBClient.set}.
  * The value is a {@link FilterOperators} object describing the predicate.
+ *
+ * All filters in a single request are AND-ed together — there is no OR support.
  *
  * Type-safe when you supply your `SearchParams` interface as the generic `SP`:
  *
@@ -291,23 +295,28 @@ export type Filters<SP extends SearchParams = SearchParams> = {
 /**
  * Options for {@link FlexDBClient.create} and {@link FlexDBClient.set}.
  *
- * Extends {@link OperationOptions} with an optional `searchParams` field
+ * Extends {@link OperationOptions} with an optional `metadata` field
  * for indexing fields at write-time.
  *
  * @example
  * ```ts
  * await db.set("user-42", { name: "Bob", age: 25 }, {
- *   namespace:    "users",
- *   searchParams: { age: 25, role: "viewer" },
+ *   namespace: "users",
+ *   metadata:  { age: 25, role: "viewer" },
  * });
  * ```
  */
 export interface SetOptions<SP extends SearchParams = SearchParams> extends OperationOptions {
   /**
-   * Fields to index for future {@link FlexDBClient.search} calls.
-   * Values are stored separately from the item data and power all filter queries.
+   * Key-value pairs to store alongside the object and index for future
+   * {@link FlexDBClient.search} calls.
+   *
+   * Values should be scalar (string, number, boolean) for filter operators
+   * to work correctly. Nested objects are not supported.
+   *
+   * To clear all metadata on an update, pass an empty object: `metadata: {}`.
    */
-  searchParams?: SP;
+  metadata?: SP;
 }
 
 /** Options for {@link FlexDBClient.get}. Inherits {@link OperationOptions}. */
@@ -326,34 +335,38 @@ export interface DeleteOptions extends OperationOptions {}
  * let cursor: string | undefined;
  * do {
  *   const result = await db.list({ namespace: "users", limit: 50, cursor });
- *   console.log(result.ids);
- *   cursor = result.nextCursor;
+ *   console.log(result.keys);
+ *   cursor = result.cursor;
  * } while (cursor);
  * ```
  *
- * @example Return full objects instead of IDs (limit must be ≤ 20)
+ * @example Return full objects instead of keys (limit must be ≤ 50)
  * ```ts
- * const { items } = await db.list<User>({ namespace: "users", hydrate: true, limit: 20 });
- * for (const { id, data } of items) {
- *   console.log(id, data?.name);
+ * const { items } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
+ * for (const { key, data } of items) {
+ *   console.log(key, data?.name);
  * }
  * ```
  */
 export interface ListOptions extends OperationOptions {
   /**
    * Maximum number of results to return per page.
-   * Hard limit: 100. When `hydrate: true`, hard limit is 20.
+   * Accepted range: 1–100. Values above 100 are silently clamped to 100.
+   * Non-integer values default to 20.
+   * When `hydrate: true`, the server only activates hydration when `limit` ≤ 50.
    * @default 20
    */
   limit?: number;
   /**
-   * Opaque pagination cursor returned as `nextCursor` from the previous call.
+   * Opaque pagination cursor returned as `cursor` from the previous call.
    * Omit (or pass `undefined`) to start from the beginning.
+   * Treat cursors as opaque — do not parse, construct, or modify them.
    */
   cursor?: string;
   /**
-   * When `true`, each result includes the full stored object instead of just its ID.
-   * **Only available when `limit` is ≤ 20** (server constraint).
+   * When `true`, each result includes the full stored object instead of just its key.
+   * **Only activated by the server when `limit` is ≤ 50** — if `limit` > 50,
+   * the server silently returns a non-hydrated response.
    * Changes the response type from {@link ListIdsResult} to {@link ListItemsResult}.
    */
   hydrate?: boolean;
@@ -366,7 +379,7 @@ export interface ListOptions extends OperationOptions {
  *
  * @example
  * ```ts
- * const { ids } = await db.search({
+ * const { keys } = await db.search({
  *   namespace: "products",
  *   filters: {
  *     price:    { gte: 10, lte: 50 },
@@ -378,7 +391,8 @@ export interface ListOptions extends OperationOptions {
  */
 export interface SearchOptions<SP extends SearchParams = SearchParams> extends ListOptions {
   /**
-   * Filter expressions evaluated server-side against the indexed `searchParams`.
+   * Filter expressions evaluated server-side against the stored `metadata`.
+   * All filters are AND-ed together — there is no OR support.
    * See {@link Filters} and {@link FilterOperators} for the full operator reference.
    */
   filters: Filters<SP>;
@@ -392,14 +406,15 @@ export interface SearchOptions<SP extends SearchParams = SearchParams> extends L
  * @example
  * ```ts
  * const result: CreateResult = await db.create({ name: "Alice" });
- * console.log(result.key); // "V1StGXR8_Z5jdHi6B-myT" (NanoID)
+ * console.log(result.key); // "V1StGXR8_Z5jdHi6B-myT" (NanoID, 21 chars)
  * ```
  */
 export interface CreateResult {
-  success: true;
+  v: 1;
+  ok: true;
   /**
-   * Server-generated NanoID key for the newly created item.
-   * Store this key — it is the only way to retrieve or delete the item later.
+   * Server-generated NanoID key (21 URL-safe characters) for the newly created object.
+   * Store this key — it is the only way to retrieve, update, or delete the object later.
    */
   key: string;
 }
@@ -414,8 +429,9 @@ export interface CreateResult {
  * ```
  */
 export interface SetResult {
-  success: true;
-  /** The caller-supplied key used to store the item. */
+  v: 1;
+  ok: true;
+  /** Echoes the caller-supplied key used to store the object. */
   key: string;
 }
 
@@ -424,14 +440,15 @@ export interface SetResult {
  *
  * @example
  * ```ts
- * const { item } = await db.get<User>("abc123");
- * console.log(item.name); // "Alice"
+ * const { data } = await db.get<User>("abc123");
+ * console.log(data.name); // "Alice"
  * ```
  */
 export interface GetResult<T = unknown> {
-  success: true;
-  /** The stored item, deserialised as type `T`. */
-  item: T;
+  v: 1;
+  ok: true;
+  /** The stored object, deserialised as type `T`. */
+  data: T;
 }
 
 /**
@@ -439,12 +456,13 @@ export interface GetResult<T = unknown> {
  *
  * @example
  * ```ts
- * const { success } = await db.delete("abc123");
- * console.log(success); // true
+ * const { ok } = await db.delete("abc123");
+ * console.log(ok); // true
  * ```
  */
 export interface DeleteResult {
-  success: true;
+  v: 1;
+  ok: true;
 }
 
 /**
@@ -453,41 +471,54 @@ export interface DeleteResult {
  *
  * @example
  * ```ts
- * const { ids, nextCursor } = await db.list({ namespace: "users", limit: 50 });
- * console.log(ids);        // ["abc", "def", ...]
- * console.log(nextCursor); // "eyJrZXkiOi..." or undefined (last page)
+ * const { keys, count, cursor } = await db.list({ namespace: "users", limit: 50 });
+ * console.log(keys);   // ["abc", "def", ...]
+ * console.log(count);  // number of keys on this page
+ * console.log(cursor); // "eyJrZXkiOi..." or undefined (last page)
  * ```
  */
 export interface ListIdsResult {
-  /** Array of item keys on this page. */
-  ids: string[];
+  v: 1;
+  ok: true;
+  /** Array of object keys on this page. Empty array `[]` if no objects exist. */
+  keys: string[];
+  /** Number of keys returned on this page. Equivalent to `keys.length`. */
+  count: number;
   /**
    * Pass this token as `cursor` in the next call to fetch the following page.
    * `undefined` indicates there are no more pages.
    */
-  nextCursor?: string;
+  cursor?: string;
 }
 
 /**
  * Returned by {@link FlexDBClient.list} and {@link FlexDBClient.search}
- * when `hydrate: true` is set. Requires `limit` ≤ 20.
+ * when `hydrate: true` is set and `limit` ≤ 50 (server constraint).
  *
  * @example
  * ```ts
- * const { items } = await db.list<User>({ hydrate: true, limit: 20 });
- * for (const { id, data } of items) {
- *   console.log(id, data?.name); // data is null if the item was deleted mid-page
+ * const { items, count } = await db.list<User>({ hydrate: true, limit: 50 });
+ * for (const { key, data } of items) {
+ *   console.log(key, data?.name); // data is null if the object was deleted mid-page
  * }
  * ```
  */
 export interface ListItemsResult<T = unknown> {
-  /** Array of `{ id, data }` pairs on this page. `data` may be `null` if an item was concurrently deleted. */
-  items: { id: string; data: T | null }[];
+  v: 1;
+  ok: true;
+  /**
+   * Array of `{ key, data }` pairs on this page.
+   * `data` may be `null` if an object existed in the index but could not be
+   * retrieved from storage (e.g. deleted between index and fetch).
+   */
+  items: { key: string; data: T | null }[];
+  /** Number of items returned on this page. Equivalent to `items.length`. */
+  count: number;
   /**
    * Pass this token as `cursor` in the next call to fetch the following page.
    * `undefined` indicates there are no more pages.
    */
-  nextCursor?: string;
+  cursor?: string;
 }
 
 /**
@@ -509,8 +540,12 @@ export type ListResult<T = unknown, H extends boolean = false> =
 /**
  * Thrown when the FlexDB server returns a non-2xx HTTP response.
  *
- * Inspect {@link FlexDBError.status} for the HTTP status code and
- * {@link FlexDBError.body} for the raw error payload from the server.
+ * Inspect {@link FlexDBError.status} for the HTTP status code,
+ * {@link FlexDBError.code} for the stable machine-readable error constant,
+ * and {@link FlexDBError.body} for the full raw error payload.
+ *
+ * Branch on `code` rather than `message` — `code` is a stable string constant
+ * while `message` is human-readable and may change between API versions.
  *
  * @example
  * ```ts
@@ -520,10 +555,15 @@ export type ListResult<T = unknown, H extends boolean = false> =
  *   await db.get("missing-key");
  * } catch (err) {
  *   if (err instanceof FlexDBError) {
- *     if (err.status === 404) console.error("Item not found");
- *     if (err.status === 401) console.error("Invalid API key");
- *     if (err.status === 429) console.error("Rate limited — slow down");
- *     console.error("Server payload:", err.body);
+ *     switch (err.code) {
+ *       case "ERR_NOT_FOUND":        console.error("Object not found"); break;
+ *       case "ERR_UNAUTHORIZED":     console.error("Invalid or expired token"); break;
+ *       case "ERR_PERMISSION_DENIED":console.error("Token lacks required permission"); break;
+ *       case "ERR_RATE_LIMIT_SECOND":console.error("Per-second rate limit hit"); break;
+ *       case "ERR_RATE_LIMIT_MONTH": console.error("Monthly limit exhausted"); break;
+ *       default: console.error(`Server error ${err.status}:`, err.message);
+ *     }
+ *     if (err.hint) console.info("Hint:", err.hint);
  *   }
  * }
  * ```
@@ -533,13 +573,41 @@ export class FlexDBError extends Error {
    * @param status  The HTTP status code returned by the server.
    * @param message Human-readable error message, extracted from the response body when available.
    * @param body    The raw response body (parsed JSON or plain text) for further inspection.
+   * @param code    Stable machine-readable error code string, e.g. `"ERR_NOT_FOUND"`.
+   * @param hint    Actionable suggestion from the server for resolving the error.
    */
   constructor(
+    /** HTTP status code returned by the server (e.g. `404`, `401`, `429`). */
     public readonly status: number,
     message: string,
+    /** The raw response body (parsed JSON or plain text). */
     public readonly body?: unknown,
+    /**
+     * Stable machine-readable error code string.
+     * Branch on this in catch blocks — it is guaranteed not to change between API versions.
+     *
+     * Known codes: `ERR_MISSING_AUTH`, `ERR_MISSING_NAMESPACE`, `ERR_UNAUTHORIZED`,
+     * `ERR_PERMISSION_DENIED`, `ERR_FORBIDDEN`, `ERR_NOT_FOUND`, `ERR_MISSING_FILTER`,
+     * `ERR_RATE_LIMIT_SECOND`, `ERR_RATE_LIMIT_MONTH`, `ERR_REQUEST_TOO_LARGE`,
+     * `ERR_STORE_FAILED`, `ERR_DELETE_FAILED`, `ERR_INTERNAL`.
+     */
+    public readonly code?: string,
+    /**
+     * Actionable suggestion from the server describing how to resolve the error.
+     * Present when the server provides guidance; `undefined` otherwise.
+     */
+    public readonly hint?: string,
   ) {
-    super(message);
+    // Build a rich message so logs and stack traces are immediately actionable
+    // without requiring the developer to inspect individual properties.
+    //
+    // Output format:
+    //   [ERR_NOT_FOUND] (404): No object exists with this key.
+    //   Hint: Verify the key and namespace are correct.
+    let formatted = code ? `[${code}] ` : "";
+    formatted += `(${status}): ${message}`;
+    if (hint) formatted += `\nHint: ${hint}`;
+    super(formatted);
     this.name = "FlexDBError";
   }
 }

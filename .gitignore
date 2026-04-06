@@ -1,5 +1,9 @@
 # Build output — committed to git only for debugging; never edit manually
 dist/
+.claude
+
+# Internal server API spec — not for public distribution
+api_definition.md
 
 # Dependencies
 node_modules/

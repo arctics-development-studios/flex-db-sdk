@@ -34,7 +34,7 @@ bunx jsr add @arctics/flex-db-sdk
 ## Quick Start
 
 ```ts
-import { createClient } from "flex-db-sdk";
+import { createClient } from "@arctics/flex-db-sdk";
 
 // Create once — reuse everywhere (module-level singleton recommended)
 const db = createClient({
@@ -47,7 +47,7 @@ const db = createClient({
 const { key } = await db.create({ name: "Alice", age: 30 });
 
 // ── Get ───────────────────────────────────────────────────────────────────
-const { item } = await db.get<{ name: string; age: number }>(key);
+const { data } = await db.get<{ name: string; age: number }>(key);
 
 // ── Set / upsert with your own key ────────────────────────────────────────
 await db.set("my-custom-key", { name: "Bob", age: 25 });
@@ -105,30 +105,30 @@ All operations require a namespace. You can provide it:
 ```ts
 // Option 3 — namespace binding (cleanest)
 const users    = db.namespace("users");
-const products = db.namespace<ProductSearchParams>("products");
+const products = db.namespace<ProductMetadata>("products");
 
-const { key } = await users.create({ name: "Charlie" });
-const { item } = await users.get<User>(key);
+const { key }  = await users.create({ name: "Charlie" });
+const { data } = await users.get<User>(key);
 ```
 
 ---
 
 ## Search & Indexing
 
-Index fields at write-time using `searchParams`. Query them later with `search()`.
+Index fields at write-time using `metadata`. Query them later with `search()`.
 
 ```ts
-// Write with indexed fields
+// Write with indexed metadata
 await db.create(
   { name: "Widget Pro", price: 49.99, category: "electronics" },
   {
     namespace: "products",
-    searchParams: { price: 49.99, category: "electronics", inStock: true },
+    metadata:  { price: 49.99, category: "electronics", inStock: true },
   },
 );
 
 // Query with filter operators
-const { ids } = await db.search({
+const { keys } = await db.search({
   namespace: "products",
   filters: {
     price:    { gte: 10, lte: 100 },
@@ -163,37 +163,33 @@ let cursor: string | undefined;
 
 do {
   const result = await db.list({ namespace: "users", limit: 50, cursor });
-  console.log(result.ids);
-  cursor = result.nextCursor;
+  console.log(result.keys);
+  cursor = result.cursor;
 } while (cursor);
 ```
 
 ### Async-iterable paginator (recommended)
 
 ```ts
-import { paginateList, paginateSearch } from "flex-db-sdk";
+import { paginateList, paginateListHydrated, paginateSearch } from "@arctics/flex-db-sdk";
 
-// ── List IDs page-by-page ─────────────────────────────────────────────────
+// ── List keys page-by-page ────────────────────────────────────────────────
 for await (const page of paginateList(db, { namespace: "users", limit: 50 })) {
   console.log(page.data);    // string[]
   console.log(page.hasMore); // false on last page
 }
 
-// ── Collect all IDs at once ───────────────────────────────────────────────
-const allIds = await paginateList(db, { namespace: "users" }).all();
+// ── Collect all keys at once ──────────────────────────────────────────────
+const allKeys = await paginateList(db, { namespace: "users" }).all();
 
-// ── Full objects page-by-page ─────────────────────────────────────────────
-import { paginateListHydrated } from "flex-db-sdk";
-
-for await (const page of paginateListHydrated<User>(db, { namespace: "users", limit: 20 })) {
-  for (const { id, data } of page.data) {
-    console.log(id, data); // { id: string; data: User | null }
+// ── Full objects page-by-page (limit ≤ 50) ───────────────────────────────
+for await (const page of paginateListHydrated<User>(db, { namespace: "users", limit: 50 })) {
+  for (const { key, data } of page.data) {
+    console.log(key, data); // { key: string; data: User | null }
   }
 }
 
 // ── Search with pagination ────────────────────────────────────────────────
-import { paginateSearch } from "flex-db-sdk";
-
 const pages = paginateSearch(db, {
   namespace: "products",
   filters: { category: { eq: "books" } },
@@ -210,17 +206,23 @@ for await (const page of pages) {
 ## Error handling
 
 ```ts
-import { FlexDBError, FlexDBNetworkError } from "flex-db-sdk";
+import { FlexDBError, FlexDBNetworkError } from "@arctics/flex-db-sdk";
 
 try {
-  const { item } = await db.get("missing-key");
+  const { data } = await db.get("missing-key");
 } catch (err) {
   if (err instanceof FlexDBError) {
     // HTTP-level error — server responded with non-2xx
+    // Branch on `code` (stable) rather than `status` or `message`
+    switch (err.code) {
+      case "ERR_NOT_FOUND":         /* object does not exist */; break;
+      case "ERR_UNAUTHORIZED":      /* invalid or expired token */; break;
+      case "ERR_PERMISSION_DENIED": /* token lacks required permission */; break;
+      case "ERR_RATE_LIMIT_SECOND": /* per-second limit hit — slow down */; break;
+      case "ERR_RATE_LIMIT_MONTH":  /* monthly limit exhausted */; break;
+    }
+    if (err.hint) console.info("Hint:", err.hint);
     console.error(err.status, err.message, err.body);
-    if (err.status === 404) { /* not found */ }
-    if (err.status === 401) { /* auth failed */ }
-    if (err.status === 429) { /* rate limited */ }
   } else if (err instanceof FlexDBNetworkError) {
     // Transport-level error — fetch itself failed
     console.error("Network error:", err.message, err.cause);
@@ -240,31 +242,31 @@ Every operation accepts an `AbortSignal` for cancellation:
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 5000); // 5s timeout
 
-const { item } = await db.get("some-key", { signal: controller.signal });
+const { data } = await db.get("some-key", { signal: controller.signal });
 ```
 
 ---
 
 ## TypeScript Generics
 
-Type your data and search params for end-to-end safety:
+Type your data and metadata shapes for end-to-end safety:
 
 ```ts
 // Define your shapes once
 interface User { name: string; age: number; }
 
-interface UserSP {
+interface UserMetadata {
   age: number;
   role: "admin" | "viewer";
 }
 
-const users = db.namespace<UserSP>("users");
+const users = db.namespace<UserMetadata>("users");
 
-// TypeScript knows `item` is `User`
-const { item } = await users.get<User>("abc");
+// TypeScript knows `data` is `User`
+const { data } = await users.get<User>("abc");
 
 // TypeScript validates filter keys and values
-const { ids } = await users.search({
+const { keys } = await users.search({
   filters: {
     age:  { gte: 18 },
     role: { eq: "admin" },
@@ -287,7 +289,7 @@ No Node.js-specific APIs are used. Drop it into any runtime.
 
 ```ts
 // lib/db.ts
-import { createClient } from "flex-db-sdk";
+import { createClient } from "@arctics/flex-db-sdk";
 export const db = createClient({ ... });
 
 // app/api/users/route.ts (Next.js App Router / Vercel Edge)
@@ -295,8 +297,8 @@ import { db } from "@/lib/db";
 export const runtime = "edge";
 
 export async function GET() {
-  const { ids } = await db.list({ namespace: "users" });
-  return Response.json({ ids });
+  const { keys } = await db.list({ namespace: "users" });
+  return Response.json({ keys });
 }
 ```
 
@@ -311,22 +313,22 @@ Returns a `FlexDBClient` instance. See [Configuration](#configuration).
 Checks service liveness. No auth required.
 
 ### `db.create(value, options?)`
-Creates an item with a server-generated key. Returns `{ success, key }`.
+Creates an object with a server-generated key. Returns `{ v: 1, ok: true, key }`.
 
 ### `db.get<T>(key, options?)`
-Retrieves an item by key. Returns `{ success, item: T }`. Throws `FlexDBError(404)` if not found.
+Retrieves an object by key. Returns `{ v: 1, ok: true, data: T }`. Throws `FlexDBError` with `code === "ERR_NOT_FOUND"` if the key does not exist.
 
 ### `db.set(key, value, options?)`
-Upserts an item at a caller-supplied key. Returns `{ success, key }`.
+Upserts an object at a caller-supplied key. Returns `{ v: 1, ok: true, key }`.
 
 ### `db.delete(key, options?)`
-Removes an item. Returns `{ success }`.
+Removes an object. Returns `{ v: 1, ok: true }`.
 
 ### `db.list(options?)`
-Lists item keys (or full objects with `hydrate: true`).
+Lists object keys (or full objects with `hydrate: true`, `limit` ≤ 50). Returns `{ keys, count, cursor? }`.
 
 ### `db.search(options)`
-Filters items by indexed search params. Accepts `filters`. Same response shape as `list`.
+Filters objects by indexed metadata. Requires `filters`. Returns `{ keys, count, cursor? }`.
 
 ### `db.namespace(ns)`
 Returns a `NamespacedClient` with the namespace baked in.

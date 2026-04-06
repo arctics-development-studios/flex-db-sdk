@@ -65,7 +65,7 @@ import type { FlexDBClientOptions } from "./types.ts";
  * });
  *
  * const { key }  = await db.create({ name: "Alice", age: 30 });
- * const { item } = await db.get(key);
+ * const { data } = await db.get(key);
  * ```
  *
  * @example Custom retry
@@ -92,7 +92,7 @@ import type { FlexDBClientOptions } from "./types.ts";
  * const products = db.namespace("products");
  *
  * await users.create({ name: "Bob" });
- * await products.create({ title: "Widget" }, { searchParams: { price: 9.99 } });
+ * await products.create({ title: "Widget" }, { metadata: { price: 9.99 } });
  * ```
  *
  * @example Singleton for edge / serverless (recommended pattern)

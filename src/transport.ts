@@ -3,9 +3,9 @@
  *
  * Internal HTTP transport layer for the FlexDB SDK.
  *
- * Handles URL construction, request serialisation, retry logic with
- * exponential backoff, and error wrapping. Not intended for direct public use —
- * all public functionality is exposed through {@link FlexDBClient}.
+ * Handles URL construction, request serialisation, retry logic, and error
+ * wrapping. Not intended for direct public use — all public functionality is
+ * exposed through {@link FlexDBClient}.
  *
  * @module
  * @internal
@@ -46,7 +46,7 @@ export interface RequestOptions {
  * Default {@link RetryConfig} applied when no `retry` option is passed to
  * {@link createClient}.
  *
- * - `times: 3` — up to 3 retries after the first failure
+ * - `times: 3` — up to 3 retries after the first failure (4 total attempts)
  * - `delay: 10` — 10 ms between attempts
  */
 export const DEFAULT_RETRY: RetryConfig = { times: 3, delay: 10 };
@@ -64,6 +64,27 @@ function clampRetryTimes(n: number): number {
 }
 
 /**
+ * Normalises a `limit` query parameter value to match server-side clamping behaviour.
+ *
+ * - Values above 100 are clamped to 100.
+ * - Non-integer or `NaN` values default to 20.
+ * - Values below 1 are clamped to 1.
+ *
+ * This mirrors the server's own clamping so the SDK sends a predictable value.
+ *
+ * @param n - Raw limit value from caller options.
+ * @returns Normalised integer limit in the range `[1, 100]`, or `20` for invalid input.
+ */
+export function clampLimit(n: unknown): number {
+  if (n === undefined || n === null) return 20;
+  const parsed = Number(n);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 20;
+  if (parsed > 100) return 100;
+  if (parsed < 1) return 1;
+  return parsed;
+}
+
+/**
  * Constructs the full request URL by joining `baseUrl` and `path`,
  * then appending a query string from `query` (if any non-`undefined` entries exist).
  *
@@ -73,7 +94,6 @@ function clampRetryTimes(n: number): number {
  * @returns Fully-formed URL string.
  */
 function buildUrl(baseUrl: string, path: string, query?: Record<string, string | number | boolean | undefined>): string {
-  // Normalise base: strip trailing slash
   const base = baseUrl.replace(/\/$/, "");
   let url = `${base}${path}`;
 
@@ -104,13 +124,12 @@ function sleep(ms: number): Promise<void> {
  * Returns `true` for HTTP status codes that represent transient server-side
  * conditions and are worth retrying.
  *
- * - `429` — rate limited
- * - `5xx` — server error
+ * - `429` — rate limited (both per-second and monthly)
+ * - `5xx` — server errors
  *
  * @param status - HTTP response status code.
  */
 function isRetryable(status: number): boolean {
-  // 429 = rate limit, 5xx = server errors
   return status === 429 || status >= 500;
 }
 
@@ -121,10 +140,11 @@ function isRetryable(status: number): boolean {
  *
  * - Parses the response body as JSON when the server returns `Content-Type: application/json`.
  * - Returns `undefined` for empty responses (e.g. `204 No Content`).
- * - Throws {@link FlexDBError} for non-2xx HTTP responses.
+ * - Throws {@link FlexDBError} for non-2xx HTTP responses, with `code` and `hint`
+ *   extracted from the server's error envelope.
  * - Throws {@link FlexDBNetworkError} when `fetch` itself fails (DNS, connection refused, etc.).
  * - Aborted requests (`AbortError`) are rethrown immediately without retrying.
- * - Client errors (`4xx`, excluding `429`) are thrown immediately without retrying.
+ * - Client errors (`4xx` excluding `429`) are thrown immediately without retrying.
  *
  * @param baseUrl    - Base URL of the FlexDB service.
  * @param authHeader - Pre-formatted `Authorization` header value, e.g. `"Bearer <token>"`.
@@ -149,11 +169,11 @@ export async function request<T = unknown>(
     ...opts.headers,
   };
 
-    const fetchInit: RequestInit = {
+  const fetchInit: RequestInit = {
     method: opts.method,
     headers,
     signal: opts.signal ?? null,
-    };
+  };
 
   if (opts.body !== undefined) {
     fetchInit.body = JSON.stringify(opts.body);
@@ -170,7 +190,7 @@ export async function request<T = unknown>(
       const response = await fetch(url, fetchInit);
 
       if (response.ok) {
-        // Prefer JSON; fall back to text for empty bodies (204 etc.)
+        // Prefer JSON; fall back for empty bodies (204 etc.)
         const ct = response.headers.get("Content-Type") ?? "";
         if (ct.includes("application/json")) {
           return (await response.json()) as T;
@@ -178,7 +198,7 @@ export async function request<T = unknown>(
         return undefined as unknown as T;
       }
 
-      // Non-2xx — parse error body if possible
+      // Non-2xx — parse the error envelope: { v, ok, error: { code, message, hint } }
       let errorBody: unknown;
       try {
         errorBody = await response.json();
@@ -186,12 +206,21 @@ export async function request<T = unknown>(
         errorBody = await response.text().catch(() => undefined);
       }
 
-      const message =
-        typeof errorBody === "object" && errorBody !== null && "error" in errorBody
-          ? String((errorBody as { error: unknown }).error)
-          : `HTTP ${response.status}`;
+      let message = `HTTP ${response.status}`;
+      let code: string | undefined;
+      let hint: string | undefined;
 
-      const err = new FlexDBError(response.status, message, errorBody);
+      if (typeof errorBody === "object" && errorBody !== null && "error" in errorBody) {
+        const errorField = (errorBody as Record<string, unknown>).error;
+        if (typeof errorField === "object" && errorField !== null) {
+          const e = errorField as Record<string, unknown>;
+          if (typeof e.message === "string") message = e.message;
+          if (typeof e.code    === "string") code    = e.code;
+          if (typeof e.hint    === "string") hint    = e.hint;
+        }
+      }
+
+      const err = new FlexDBError(response.status, message, errorBody, code, hint);
 
       // Only retry on transient server errors
       if (attempt < maxAttempts && isRetryable(response.status)) {
