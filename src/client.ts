@@ -415,8 +415,16 @@ export class FlexDBClient {
   async list<T = unknown>(
     options?: ListOptions,
   ): Promise<ListIdsResult | ListItemsResult<T>> {
+    // When hydration is requested, cap limit to 50 — the server silently ignores
+    // ?full=true when limit > 50, which would cause a type mismatch at runtime
+    // (server returns ListIdsResult but TypeScript promises ListItemsResult).
+    const rawLimit = options?.limit !== undefined ? clampLimit(options.limit) : undefined;
+    const effectiveLimit = options?.hydrate && rawLimit !== undefined
+      ? Math.min(rawLimit, 50)
+      : rawLimit;
+
     const query: Record<string, string | number | boolean | undefined> = {
-      limit: options?.limit !== undefined ? clampLimit(options.limit) : undefined,
+      limit: effectiveLimit,
       cursor: options?.cursor,
     };
 
@@ -506,8 +514,14 @@ export class FlexDBClient {
   async search<T = unknown, SP extends SearchParams = SearchParams>(
     options: SearchOptions<SP>,
   ): Promise<ListIdsResult | ListItemsResult<T>> {
+    // Same hydration-limit guard as list() — cap to 50 when hydrate=true.
+    const rawLimit = options.limit !== undefined ? clampLimit(options.limit) : undefined;
+    const effectiveLimit = options.hydrate && rawLimit !== undefined
+      ? Math.min(rawLimit, 50)
+      : rawLimit;
+
     const query: Record<string, string | number | boolean | undefined> = {
-      limit: options.limit !== undefined ? clampLimit(options.limit) : undefined,
+      limit: effectiveLimit,
       cursor: options.cursor,
     };
 
