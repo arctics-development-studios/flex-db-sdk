@@ -12,13 +12,13 @@
  * // deno.json
  * {
  *   "imports": {
- *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^1.1.0"
+ *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.0.0"
  *   }
  * }
  * // package.json
  * {
  *   "dependencies": {
- *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^1.1.0"
+ *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.0.0"
  *   }
  * }
  * ```
@@ -160,11 +160,16 @@ export type {
   DeleteOptions,
   ListOptions,
   SearchOptions,
+  UpdateOptions,
 
   // Data shapes
   SearchParams,
   Filters,
   FilterOperators,
+
+  // Bulk operation items
+  BulkCreateItem,
+  BulkSetItem,
 
   // Results
   CreateResult,
@@ -174,6 +179,11 @@ export type {
   ListIdsResult,
   ListItemsResult,
   ListResult,
+  UpdateOneResult,
+  UpdateResult,
+  BulkCreateResult,
+  BulkSetResult,
+  BulkDeleteResult,
 } from "./src/types.ts";
 
 // ── Errors ─────────────────────────────────────────────────────────────────

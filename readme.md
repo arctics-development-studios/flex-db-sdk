@@ -11,6 +11,8 @@ Type-safe, zero-dependency JavaScript / TypeScript client for **FlexDB** — a h
 - **Built-in retry** — configurable per-client, with sane defaults
 - **Namespace binding** — bind a namespace once, forget about it forever
 - **Async-iterable pagination** — `for await` over every page with zero boilerplate
+- **Partial updates** — shallow-merge patches on single objects or entire filter results
+- **Bulk operations** — create, set, or delete up to 50 objects in a single request
 - **Edge-first** — works in Cloudflare Workers, Vercel Edge, Deno, Bun, and Node ≥ 18
 - **Singleton-friendly** — one client instance per process maximises keep-alive reuse
 
@@ -51,6 +53,9 @@ const { data } = await db.get<{ name: string; age: number }>(key);
 
 // ── Set / upsert with your own key ────────────────────────────────────────
 await db.set("my-custom-key", { name: "Bob", age: 25 });
+
+// ── Partial patch (field-level update) ────────────────────────────────────
+await db.updateOne(key, { data: { age: 31 } }); // name is preserved
 
 // ── Delete ────────────────────────────────────────────────────────────────
 await db.delete(key);
@@ -148,9 +153,83 @@ const { keys } = await db.search({
 | `gte`    | Greater than or equal                                 |
 | `lt`     | Less than                                             |
 | `lte`    | Less than or equal                                    |
-| `inc`    | String contains / array includes                      |
 | `sw`     | String begins with                                    |
-| `ex`     | Attribute exists (`true`) or does not exist (`false`) |
+| `ex`     | Attribute exists (`true`). Note: `false` has no effect |
+
+---
+
+## Partial Updates
+
+Use `updateOne()` to merge fields into a single object without replacing it entirely. Use `update()` to patch all objects matching a filter.
+
+```ts
+// ── updateOne — patch a single object by key ──────────────────────────────
+// Before: { name: "Alice", age: 30, city: "Berlin" }
+await db.updateOne(
+  "user-42",
+  { data: { age: 31 } },           // only age is updated
+  { namespace: "users" },
+);
+// After: { name: "Alice", age: 31, city: "Berlin" }
+
+// ── update — patch all matching objects ───────────────────────────────────
+let cursor: string | undefined;
+do {
+  const result = await db.update({
+    namespace: "orders",
+    filters:   { status: { eq: "active" } },
+    data:      { status: "archived" },
+    metadata:  { status: "archived" },
+    limit:     50,
+    cursor,
+  });
+  console.log(`Patched ${result.updated} orders`);
+  cursor = result.cursor;
+} while (cursor);
+```
+
+### Merge rules
+
+- Both `data` and `metadata` are optional — omit either to leave it unchanged.
+- **Object + Object** → shallow merge (keys from patch overwrite; unspecified keys preserved).
+- **Any + non-Object** → full replacement.
+- `metadata` is always shallow-merged. Set a key to `null` to remove it.
+- Patches are **not atomic** — last write wins under concurrent updates.
+
+---
+
+## Bulk Operations
+
+Create, set, or delete up to 50 objects in a single HTTP request.
+
+```ts
+// ── bulkCreate — server-generated keys ───────────────────────────────────
+const { keys } = await db.bulkCreate(
+  [
+    { data: { name: "Alice" }, metadata: { role: "admin" } },
+    { data: { name: "Bob" },   metadata: { role: "viewer" } },
+  ],
+  { namespace: "users" },
+);
+console.log(keys); // ["<nanoid1>", "<nanoid2>"]
+
+// ── bulkSet — caller-supplied keys (full replace) ─────────────────────────
+const { keys } = await db.bulkSet(
+  [
+    { key: "user-1", data: { name: "Alice" } },
+    { key: "user-2", data: { name: "Bob" } },
+  ],
+  { namespace: "users" },
+);
+
+// ── bulkDelete ────────────────────────────────────────────────────────────
+await db.bulkDelete(["user-1", "user-2", "user-3"], { namespace: "users" });
+```
+
+**Notes:**
+- All items are validated upfront — if any `data` value exceeds 5 MB, the entire request is rejected before any writes occur.
+- Non-existent keys in `bulkDelete()` are silently skipped.
+- Maximum 50 items per bulk request (server-enforced).
 
 ---
 
@@ -220,6 +299,7 @@ try {
       case "ERR_PERMISSION_DENIED": /* token lacks required permission */; break;
       case "ERR_RATE_LIMIT_SECOND": /* per-second limit hit — slow down */; break;
       case "ERR_RATE_LIMIT_MONTH":  /* monthly limit exhausted */; break;
+      case "ERR_BULK_TOO_LARGE":    /* too many items in bulk request */; break;
     }
     if (err.hint) console.info("Hint:", err.hint);
     console.error(err.status, err.message, err.body);
@@ -252,7 +332,6 @@ const { data } = await db.get("some-key", { signal: controller.signal });
 Type your data and metadata shapes for end-to-end safety:
 
 ```ts
-// Define your shapes once
 interface User { name: string; age: number; }
 
 interface UserMetadata {
@@ -272,6 +351,12 @@ const { keys } = await users.search({
     role: { eq: "admin" },
   },
 });
+
+// TypeScript validates patch types
+await users.updateOne<User, UserMetadata>("abc", {
+  data:     { age: 31 },
+  metadata: { age: 31 },
+});
 ```
 
 ---
@@ -285,7 +370,7 @@ The SDK has **zero dependencies** and uses only:
 
 No Node.js-specific APIs are used. Drop it into any runtime.
 
-**Recommended pattern for edge functions** — instantiate at module scope so the client is reused across requests in the same isolate:
+**Recommended pattern for edge functions** — instantiate at module scope:
 
 ```ts
 // lib/db.ts
@@ -319,10 +404,10 @@ Creates an object with a server-generated key. Returns `{ v: 1, ok: true, key }`
 Retrieves an object by key. Returns `{ v: 1, ok: true, data: T }`. Throws `FlexDBError` with `code === "ERR_NOT_FOUND"` if the key does not exist.
 
 ### `db.set(key, value, options?)`
-Upserts an object at a caller-supplied key. Returns `{ v: 1, ok: true, key }`.
+Upserts an object at a caller-supplied key (full replace). Returns `{ v: 1, ok: true, key }`.
 
 ### `db.delete(key, options?)`
-Removes an object. Returns `{ v: 1, ok: true }`.
+Removes an object. Returns `{ v: 1, ok: true }`. Non-existent keys are silently ignored.
 
 ### `db.list(options?)`
 Lists object keys (or full objects with `hydrate: true`, `limit` ≤ 50). Returns `{ keys, count, cursor? }`.
@@ -330,8 +415,23 @@ Lists object keys (or full objects with `hydrate: true`, `limit` ≤ 50). Return
 ### `db.search(options)`
 Filters objects by indexed metadata. Requires `filters`. Returns `{ keys, count, cursor? }`.
 
+### `db.updateOne(key, patch, options?)`
+Shallow-merges `patch.data` and `patch.metadata` into an existing object. The object must exist. Returns `{ v: 1, ok: true, key }`.
+
+### `db.update(options)`
+Shallow-merges a patch into all objects matching `filters`. Supports pagination via `cursor`. Returns `{ updated, cursor? }`.
+
+### `db.bulkCreate(items, options?)`
+Creates up to 50 objects in parallel with server-generated keys. Returns `{ keys }`.
+
+### `db.bulkSet(items, options?)`
+Upserts up to 50 objects in parallel at caller-supplied keys (full replace). Returns `{ keys }`.
+
+### `db.bulkDelete(keys, options?)`
+Deletes up to 50 objects in parallel. Non-existent keys are skipped. Returns `{ v: 1, ok: true }`.
+
 ### `db.namespace(ns)`
-Returns a `NamespacedClient` with the namespace baked in.
+Returns a `NamespacedClient` with the namespace baked in to all operations.
 
 ### `paginateList(client, options?)` / `paginateListHydrated<T>(client, options?)`
 Returns an async-iterable `Paginator` for `list` results.

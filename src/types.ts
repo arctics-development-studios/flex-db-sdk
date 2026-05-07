@@ -229,7 +229,6 @@ export type SearchParams = Record<string, string | number | boolean | null | (st
  *     price:    { gte: 10, lte: 100 },   // range
  *     category: { eq: "electronics" },   // exact match
  *     sku:      { sw: "WIDGET-" },        // starts with
- *     tags:     { inc: "sale" },          // array includes / string contains
  *     rating:   { neq: null },            // not null
  *     discount: { ex: true },             // field exists
  *   },
@@ -249,13 +248,13 @@ export interface FilterOperators<T = any> {
   lt?: T;
   /** Less than or equal — equivalent to `field <= value`. */
   lte?: T;
-  /** String contains (substring check) or array/set includes the given value. */
-  inc?: T;
   /** String starts with the given prefix. */
   sw?: T;
   /**
    * Attribute existence check.
-   * `true` → field must exist; `false` → field must not exist.
+   * `true` → field must exist in the stored metadata.
+   * Note: passing `false` has no server-side effect — the API only implements
+   * the existence check, not the absence check.
    */
   ex?: boolean;
 }
@@ -534,6 +533,166 @@ export interface ListItemsResult<T = unknown> {
  */
 export type ListResult<T = unknown, H extends boolean = false> =
   H extends true ? ListItemsResult<T> : ListIdsResult;
+
+// ── Partial Update ─────────────────────────────────────────────────────────
+
+/**
+ * Returned by {@link FlexDBClient.updateOne}.
+ *
+ * @example
+ * ```ts
+ * const { key } = await db.updateOne("abc123", { data: { age: 31 } });
+ * console.log(key); // "abc123"
+ * ```
+ */
+export interface UpdateOneResult {
+  v: 1;
+  ok: true;
+  /** Echoes the key of the patched object. */
+  key: string;
+}
+
+/**
+ * Options for {@link FlexDBClient.update} — partial update by filter.
+ *
+ * @example
+ * ```ts
+ * const { updated, cursor } = await db.update({
+ *   namespace: "products",
+ *   filters:   { status: { eq: "active" } },
+ *   data:      { status: "archived" },
+ *   metadata:  { status: "archived" },
+ *   limit:     50,
+ * });
+ * ```
+ */
+export interface UpdateOptions<SP extends SearchParams = SearchParams> extends OperationOptions {
+  /** Filter conditions — all AND-ed. Same syntax as {@link SearchOptions.filters}. Must be non-empty. */
+  filters: Filters<SP>;
+  /** Fields to shallow-merge into each matching object's `data`. Omit to leave data unchanged. */
+  data?: unknown;
+  /** Fields to shallow-merge into each matching object's `metadata.sp`. Omit to leave metadata unchanged. */
+  metadata?: SP;
+  /**
+   * Maximum objects to process per call. Range: 1–100. Values above 100 are clamped to 100.
+   * @default 20
+   */
+  limit?: number;
+  /** Pagination token from the previous response. Omit on first call. */
+  cursor?: string;
+}
+
+/**
+ * Returned by {@link FlexDBClient.update}.
+ *
+ * @example
+ * ```ts
+ * let cursor: string | undefined;
+ * do {
+ *   const result = await db.update({ namespace: "users", filters: { role: { eq: "guest" } }, data: { active: false } });
+ *   console.log(`Patched ${result.updated} objects`);
+ *   cursor = result.cursor;
+ * } while (cursor);
+ * ```
+ */
+export interface UpdateResult {
+  v: 1;
+  ok: true;
+  /** Number of objects successfully patched in this call. */
+  updated: number;
+  /**
+   * Present when more matching objects exist beyond this page.
+   * Pass to the next call's `cursor` option to continue.
+   */
+  cursor?: string;
+}
+
+// ── Bulk Operations ───────────────────────────────────────────────────────
+
+/**
+ * A single item in a {@link FlexDBClient.bulkCreate} request.
+ *
+ * @example
+ * ```ts
+ * const items: BulkCreateItem<User, UserSP>[] = [
+ *   { data: { name: "Alice" }, metadata: { age: 30, role: "admin" } },
+ *   { data: { name: "Bob" } },
+ * ];
+ * const { keys } = await db.bulkCreate(items, { namespace: "users" });
+ * ```
+ */
+export interface BulkCreateItem<T = unknown, SP extends SearchParams = SearchParams> {
+  /** The value to store. Can be any JSON-serialisable value. */
+  data: T;
+  /** Key-value pairs to index for future {@link FlexDBClient.search} queries. */
+  metadata?: SP;
+}
+
+/**
+ * Returned by {@link FlexDBClient.bulkCreate}.
+ *
+ * @example
+ * ```ts
+ * const { keys } = await db.bulkCreate([{ data: { name: "Alice" } }], { namespace: "users" });
+ * console.log(keys); // ["V1StGXR8_Z5jdHi6B-myT", ...]
+ * ```
+ */
+export interface BulkCreateResult {
+  v: 1;
+  ok: true;
+  /** Auto-generated keys for each created object, in the same order as the input `items`. */
+  keys: string[];
+}
+
+/**
+ * A single item in a {@link FlexDBClient.bulkSet} request.
+ *
+ * @example
+ * ```ts
+ * const items: BulkSetItem<User, UserSP>[] = [
+ *   { key: "user-1", data: { name: "Alice" }, metadata: { age: 30 } },
+ *   { key: "user-2", data: { name: "Bob" } },
+ * ];
+ * const { keys } = await db.bulkSet(items, { namespace: "users" });
+ * ```
+ */
+export interface BulkSetItem<T = unknown, SP extends SearchParams = SearchParams> {
+  /** The key to create or fully overwrite. */
+  key: string;
+  /** Fully replaces the previously stored value. */
+  data: T;
+  /** Fully replaces the previously stored metadata. Pass `{}` to clear. */
+  metadata?: SP;
+}
+
+/**
+ * Returned by {@link FlexDBClient.bulkSet}.
+ *
+ * @example
+ * ```ts
+ * const { keys } = await db.bulkSet([{ key: "user-1", data: { name: "Alice" } }], { namespace: "users" });
+ * console.log(keys); // ["user-1"]
+ * ```
+ */
+export interface BulkSetResult {
+  v: 1;
+  ok: true;
+  /** The input keys echoed back in the same order as the input `items`. */
+  keys: string[];
+}
+
+/**
+ * Returned by {@link FlexDBClient.bulkDelete}.
+ *
+ * @example
+ * ```ts
+ * await db.bulkDelete(["user-1", "user-2"], { namespace: "users" });
+ * ```
+ */
+export interface BulkDeleteResult {
+  v: 1;
+  ok: true;
+}
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 

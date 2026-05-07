@@ -32,18 +32,48 @@ import type {
   RetryConfig,
   OperationOptions,
   SearchParams,
+  Filters,
   SetOptions,
   GetOptions,
   DeleteOptions,
   ListOptions,
   SearchOptions,
+  UpdateOptions,
   CreateResult,
   SetResult,
   GetResult,
   DeleteResult,
   ListIdsResult,
   ListItemsResult,
+  UpdateOneResult,
+  UpdateResult,
+  BulkCreateItem,
+  BulkCreateResult,
+  BulkSetItem,
+  BulkSetResult,
+  BulkDeleteResult,
 } from "./types.ts";
+
+// ── Internal helpers ───────────────────────────────────────────────────────
+
+/**
+ * Converts the SDK's ergonomic filter object format to the API wire format.
+ *
+ * SDK input:  `{ price: { gte: 10, lte: 100 }, category: { eq: "books" } }`
+ * API output: `[{ field: "price", op: "gte", value: 10 }, { field: "price", op: "lte", value: 100 }, ...]`
+ *
+ * A single field with multiple operators produces multiple entries (all AND-ed by the server).
+ */
+function filtersToArray(filters: Filters): { field: string; op: string; value: unknown }[] {
+  const result: { field: string; op: string; value: unknown }[] = [];
+  for (const [field, operators] of Object.entries(filters)) {
+    if (!operators) continue;
+    for (const [op, value] of Object.entries(operators as Record<string, unknown>)) {
+      if (value !== undefined) result.push({ field, op, value });
+    }
+  }
+  return result;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  FlexDBClient
@@ -205,7 +235,7 @@ export class FlexDBClient {
   ): Promise<CreateResult> {
     const body: Record<string, unknown> = { data: value };
     if (options?.metadata !== undefined) {
-      body.metadata = options.metadata;
+      body.metadata = { sp: options.metadata };
     }
 
     return this.#request<CreateResult>(
@@ -312,7 +342,7 @@ export class FlexDBClient {
   ): Promise<SetResult> {
     const body: Record<string, unknown> = { data: value };
     if (options?.metadata !== undefined) {
-      body.metadata = options.metadata;
+      body.metadata = { sp: options.metadata };
     }
 
     return this.#request<SetResult>(
@@ -332,13 +362,14 @@ export class FlexDBClient {
    * Permanently removes an object and all its data across all storage tiers.
    *
    * This operation is **irreversible**. The object's data, metadata, and cache
-   * entries are all deleted.
+   * entries are all deleted across all storage tiers in parallel.
+   *
+   * Non-existent keys are silently ignored — the server always returns 200
+   * regardless of whether the key existed.
    *
    * @param key     - The key of the object to delete.
    * @param options - Optional namespace override and abort signal.
    * @returns `{ v: 1, ok: true }`.
-   *
-   * @throws {@link FlexDBError} with `code === "ERR_NOT_FOUND"` if the key does not exist.
    *
    * @example
    * ```ts
@@ -520,22 +551,261 @@ export class FlexDBClient {
       ? Math.min(rawLimit, 50)
       : rawLimit;
 
-    const query: Record<string, string | number | boolean | undefined> = {
-      limit: effectiveLimit,
-      cursor: options.cursor,
-    };
-
-    if (options.hydrate) {
-      query.full = "true";
-    }
+    // Per API spec: for POST /v1/search, pagination and hydration options go in
+    // the request body under "options" — not as query parameters.
+    const bodyOptions: Record<string, unknown> = {};
+    if (effectiveLimit !== undefined) bodyOptions.limit = effectiveLimit;
+    if (options.cursor !== undefined) bodyOptions.cursor = options.cursor;
+    if (options.hydrate) bodyOptions.full = true;
 
     return this.#request<ListIdsResult | ListItemsResult<T>>(
       {
         method: "POST",
         path: "/v1/search",
         headers: { "X-Namespace": this.#ns(options) },
-        query,
-        body: { filters: options.filters },
+        body: {
+          filters: filtersToArray(options.filters),
+          options: bodyOptions,
+        },
+      },
+      options,
+    );
+  }
+
+  // ── Partial Updates ───────────────────────────────────────────────────────
+
+  /**
+   * Performs a **shallow merge** update on a single existing object.
+   *
+   * Unlike {@link set}, which fully replaces the stored value, `updateOne` merges
+   * only the fields you provide — unspecified fields are preserved.
+   *
+   * The object must already exist; if the key is not found, `ERR_NOT_FOUND` is thrown.
+   *
+   * ### Merge semantics
+   * - If both existing and incoming `data` are JSON objects → keys are merged shallowly.
+   * - If either is not an object (e.g. array, string) → existing value is fully replaced.
+   * - `metadata` is always shallow-merged: provided keys overwrite; unspecified keys preserved.
+   * - To remove a metadata key, set it to `null` in the patch.
+   *
+   * @param key   - The object key to patch.
+   * @param patch - Fields to merge. Both `data` and `metadata` are optional.
+   * @param options - Optional namespace override and abort signal.
+   * @returns `{ v: 1, ok: true, key }`.
+   *
+   * @throws {@link FlexDBError} with `code === "ERR_NOT_FOUND"` if the key does not exist.
+   *
+   * @example Patch a single field
+   * ```ts
+   * await db.updateOne(
+   *   "user-42",
+   *   { data: { age: 31 } },
+   *   { namespace: "users" },
+   * );
+   * // Result: existing { name: "Alice", age: 30 } → { name: "Alice", age: 31 }
+   * ```
+   *
+   * @example Patch metadata only
+   * ```ts
+   * await db.updateOne(
+   *   "user-42",
+   *   { metadata: { role: "admin" } },
+   *   { namespace: "users" },
+   * );
+   * ```
+   */
+  async updateOne<T = unknown, SP extends SearchParams = SearchParams>(
+    key: string,
+    patch: { data?: T; metadata?: SP },
+    options?: OperationOptions,
+  ): Promise<UpdateOneResult> {
+    const body: Record<string, unknown> = {};
+    if (patch.data !== undefined) body.data = patch.data;
+    if (patch.metadata !== undefined) body.metadata = { sp: patch.metadata };
+
+    return this.#request<UpdateOneResult>(
+      {
+        method: "POST",
+        path: `/v1/updateOne/${encodeURIComponent(key)}`,
+        headers: { "X-Namespace": this.#ns(options) },
+        body,
+      },
+      options,
+    );
+  }
+
+  /**
+   * Finds objects matching search filters and performs a **shallow merge** update on each.
+   *
+   * Uses the same filter engine as {@link search}. Supports cursor pagination — pass
+   * `cursor` from the previous response to process subsequent pages.
+   *
+   * Objects race-deleted during the operation are silently skipped and not counted
+   * in `updated`.
+   *
+   * @param options - Filters, patch data, pagination, namespace, and abort signal.
+   * @returns `{ v: 1, ok: true, updated, cursor? }`.
+   *
+   * @example Archive all active records
+   * ```ts
+   * let cursor: string | undefined;
+   * do {
+   *   const result = await db.update({
+   *     namespace: "orders",
+   *     filters:   { status: { eq: "active" } },
+   *     data:      { status: "archived" },
+   *     metadata:  { status: "archived" },
+   *     limit:     50,
+   *     cursor,
+   *   });
+   *   console.log(`Patched ${result.updated} objects`);
+   *   cursor = result.cursor;
+   * } while (cursor);
+   * ```
+   */
+  async update<SP extends SearchParams = SearchParams>(
+    options: UpdateOptions<SP>,
+  ): Promise<UpdateResult> {
+    const rawLimit = options.limit !== undefined ? clampLimit(options.limit) : undefined;
+
+    const body: Record<string, unknown> = {
+      filters: filtersToArray(options.filters),
+    };
+    if (options.data !== undefined) body.data = options.data;
+    if (options.metadata !== undefined) body.metadata = { sp: options.metadata };
+    const bodyOptions: Record<string, unknown> = {};
+    if (rawLimit !== undefined) bodyOptions.limit = rawLimit;
+    if (options.cursor !== undefined) bodyOptions.cursor = options.cursor;
+    body.options = bodyOptions;
+
+    return this.#request<UpdateResult>(
+      {
+        method: "POST",
+        path: "/v1/update",
+        headers: { "X-Namespace": this.#ns(options) },
+        body,
+      },
+      options,
+    );
+  }
+
+  // ── Bulk Operations ───────────────────────────────────────────────────────
+
+  /**
+   * Creates up to 50 objects in parallel, each with a server-generated NanoID key.
+   *
+   * All items are validated upfront — if any `data` value exceeds 5 MB, the
+   * entire request is rejected with `ERR_REQUEST_TOO_LARGE` before any writes occur.
+   *
+   * @param items   - Array of objects to create (max 50).
+   * @param options - Optional namespace override and abort signal.
+   * @returns `{ v: 1, ok: true, keys }` — keys in the same order as `items`.
+   *
+   * @example
+   * ```ts
+   * const { keys } = await db.bulkCreate(
+   *   [
+   *     { data: { name: "Alice" }, metadata: { role: "admin" } },
+   *     { data: { name: "Bob" } },
+   *   ],
+   *   { namespace: "users" },
+   * );
+   * console.log(keys); // ["<nanoid1>", "<nanoid2>"]
+   * ```
+   */
+  async bulkCreate<T, SP extends SearchParams = SearchParams>(
+    items: BulkCreateItem<T, SP>[],
+    options?: OperationOptions,
+  ): Promise<BulkCreateResult> {
+    return this.#request<BulkCreateResult>(
+      {
+        method: "POST",
+        path: "/v1/bulk/create",
+        headers: { "X-Namespace": this.#ns(options) },
+        body: {
+          items: items.map((item) => {
+            const entry: Record<string, unknown> = { data: item.data };
+            if (item.metadata !== undefined) entry.metadata = { sp: item.metadata };
+            return entry;
+          }),
+        },
+      },
+      options,
+    );
+  }
+
+  /**
+   * Upserts up to 50 objects in parallel at caller-supplied keys.
+   *
+   * Each item is a full replace — semantics identical to calling {@link set} on
+   * each item individually. If a key exists, its data and metadata are fully
+   * overwritten. If it does not exist, it is created.
+   *
+   * All items are validated upfront — if any `data` value exceeds 5 MB, the
+   * entire request is rejected before any writes occur.
+   *
+   * @param items   - Array of `{ key, data, metadata? }` objects to upsert (max 50).
+   * @param options - Optional namespace override and abort signal.
+   * @returns `{ v: 1, ok: true, keys }` — input keys echoed back in the same order.
+   *
+   * @example
+   * ```ts
+   * const { keys } = await db.bulkSet(
+   *   [
+   *     { key: "user-1", data: { name: "Alice" }, metadata: { role: "admin" } },
+   *     { key: "user-2", data: { name: "Bob" } },
+   *   ],
+   *   { namespace: "users" },
+   * );
+   * console.log(keys); // ["user-1", "user-2"]
+   * ```
+   */
+  async bulkSet<T, SP extends SearchParams = SearchParams>(
+    items: BulkSetItem<T, SP>[],
+    options?: OperationOptions,
+  ): Promise<BulkSetResult> {
+    return this.#request<BulkSetResult>(
+      {
+        method: "POST",
+        path: "/v1/bulk/set",
+        headers: { "X-Namespace": this.#ns(options) },
+        body: {
+          items: items.map((item) => {
+            const entry: Record<string, unknown> = { key: item.key, data: item.data };
+            if (item.metadata !== undefined) entry.metadata = { sp: item.metadata };
+            return entry;
+          }),
+        },
+      },
+      options,
+    );
+  }
+
+  /**
+   * Deletes up to 50 objects in parallel from all storage tiers.
+   *
+   * Non-existent keys are silently skipped. The operation always returns 200
+   * regardless of whether the keys existed.
+   *
+   * @param keys    - Array of object keys to delete (max 50).
+   * @param options - Optional namespace override and abort signal.
+   * @returns `{ v: 1, ok: true }`.
+   *
+   * @example
+   * ```ts
+   * await db.bulkDelete(["user-1", "user-2", "user-3"], { namespace: "users" });
+   * ```
+   */
+  async bulkDelete(
+    keys: string[],
+    options?: OperationOptions,
+  ): Promise<BulkDeleteResult> {
+    return this.#request<BulkDeleteResult>(
+      {
+        method: "DELETE",
+        path: "/v1/bulk/delete",
+        headers: { "X-Namespace": this.#ns(options) },
+        body: { keys },
       },
       options,
     );
@@ -727,6 +997,95 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
 
   list<T = unknown>(options?: Omit<ListOptions, "namespace">): Promise<ListIdsResult | ListItemsResult<T>> {
     return this.#client.list<T>({ ...options, namespace: this.#namespace } as any);
+  }
+
+  /**
+   * Partially updates a single object by shallow-merging the patch into the bound namespace.
+   * See {@link FlexDBClient.updateOne} for full documentation.
+   *
+   * @example
+   * ```ts
+   * const users = db.namespace("users");
+   * await users.updateOne("user-42", { data: { age: 31 } });
+   * ```
+   */
+  updateOne<T = unknown, SP extends SearchParams = DefaultSP>(
+    key: string,
+    patch: { data?: T; metadata?: SP },
+    options?: Omit<OperationOptions, "namespace">,
+  ): Promise<UpdateOneResult> {
+    return this.#client.updateOne<T, SP>(key, patch, { ...options, namespace: this.#namespace });
+  }
+
+  /**
+   * Partially updates objects matching filters in the bound namespace.
+   * See {@link FlexDBClient.update} for full documentation.
+   *
+   * @example
+   * ```ts
+   * const orders = db.namespace("orders");
+   * const { updated } = await orders.update({
+   *   filters:  { status: { eq: "active" } },
+   *   data:     { status: "archived" },
+   *   metadata: { status: "archived" },
+   * });
+   * ```
+   */
+  update<SP extends SearchParams = DefaultSP>(
+    options: Omit<UpdateOptions<SP>, "namespace">,
+  ): Promise<UpdateResult> {
+    return this.#client.update<SP>({ ...options, namespace: this.#namespace });
+  }
+
+  /**
+   * Creates up to 50 objects in parallel in the bound namespace.
+   * See {@link FlexDBClient.bulkCreate} for full documentation.
+   *
+   * @example
+   * ```ts
+   * const users = db.namespace("users");
+   * const { keys } = await users.bulkCreate([{ data: { name: "Alice" } }]);
+   * ```
+   */
+  bulkCreate<T, SP extends SearchParams = DefaultSP>(
+    items: BulkCreateItem<T, SP>[],
+    options?: Omit<OperationOptions, "namespace">,
+  ): Promise<BulkCreateResult> {
+    return this.#client.bulkCreate<T, SP>(items, { ...options, namespace: this.#namespace });
+  }
+
+  /**
+   * Upserts up to 50 objects in parallel in the bound namespace.
+   * See {@link FlexDBClient.bulkSet} for full documentation.
+   *
+   * @example
+   * ```ts
+   * const users = db.namespace("users");
+   * const { keys } = await users.bulkSet([{ key: "user-1", data: { name: "Alice" } }]);
+   * ```
+   */
+  bulkSet<T, SP extends SearchParams = DefaultSP>(
+    items: BulkSetItem<T, SP>[],
+    options?: Omit<OperationOptions, "namespace">,
+  ): Promise<BulkSetResult> {
+    return this.#client.bulkSet<T, SP>(items, { ...options, namespace: this.#namespace });
+  }
+
+  /**
+   * Deletes up to 50 objects in parallel from the bound namespace.
+   * See {@link FlexDBClient.bulkDelete} for full documentation.
+   *
+   * @example
+   * ```ts
+   * const users = db.namespace("users");
+   * await users.bulkDelete(["user-1", "user-2"]);
+   * ```
+   */
+  bulkDelete(
+    keys: string[],
+    options?: Omit<OperationOptions, "namespace">,
+  ): Promise<BulkDeleteResult> {
+    return this.#client.bulkDelete(keys, { ...options, namespace: this.#namespace });
   }
 
   /**
