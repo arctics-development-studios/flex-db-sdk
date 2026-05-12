@@ -341,8 +341,8 @@ export interface DeleteOptions extends OperationOptions {}
  *
  * @example Return full objects instead of keys (limit must be ≤ 50)
  * ```ts
- * const { items } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
- * for (const { key, data } of items) {
+ * const { keys } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
+ * for (const { key, data } of keys) {
  *   console.log(key, data?.name);
  * }
  * ```
@@ -400,6 +400,46 @@ export interface SearchOptions<SP extends SearchParams = SearchParams> extends L
 // ── Responses ─────────────────────────────────────────────────────────────
 
 /**
+ * Returned by {@link FlexDBClient.health}.
+ *
+ * @example
+ * ```ts
+ * const { status } = await db.health();
+ * console.log(status); // "healthy"
+ * ```
+ */
+export interface HealthResult {
+  v: 1;
+  ok: true;
+  /** `"healthy"` when the service is operating normally. */
+  status: string;
+}
+
+/**
+ * Metadata stored alongside every FlexDB object and returned on reads.
+ *
+ * | Field | Description |
+ * |-------|-------------|
+ * | `w`   | `true` = warm tier (DynamoDB); `false` = cold tier (S3). |
+ * | `s`   | Serialised byte size of `data` as stored (UTF-8 JSON). |
+ * | `lut` | Unix timestamp (seconds) of the last write. |
+ * | `upi` | Reserved; always `0`. |
+ * | `sp`  | Search parameters indexed at write-time. |
+ */
+export interface ObjectMeta<SP extends SearchParams = SearchParams> {
+  /** Storage tier — `true` = warm (DynamoDB), `false` = cold (S3). */
+  w: boolean;
+  /** Serialised byte size of `data` at last write. Useful for cost analysis. */
+  s: number;
+  /** Last-updated Unix timestamp in seconds. */
+  lut: number;
+  /** Reserved field — always `0`. */
+  upi: number;
+  /** Search parameters stored with this object (set via `metadata` on writes). */
+  sp: SP;
+}
+
+/**
  * Returned by {@link FlexDBClient.create}.
  *
  * @example
@@ -439,15 +479,22 @@ export interface SetResult {
  *
  * @example
  * ```ts
- * const { data } = await db.get<User>("abc123");
- * console.log(data.name); // "Alice"
+ * const { key, data, metadata } = await db.get<User>("abc123");
+ * console.log(data.name);       // "Alice"
+ * console.log(metadata.w);      // true = warm tier (DynamoDB)
+ * console.log(metadata.lut);    // Unix timestamp of last write
+ * console.log(metadata.sp);     // search params stored at write-time
  * ```
  */
-export interface GetResult<T = unknown> {
+export interface GetResult<T = unknown, SP extends SearchParams = SearchParams> {
   v: 1;
   ok: true;
+  /** Echoes the key used to fetch this object. */
+  key: string;
   /** The stored object, deserialised as type `T`. */
   data: T;
+  /** Full metadata record for this object. */
+  metadata: ObjectMeta<SP>;
 }
 
 /**
@@ -470,9 +517,8 @@ export interface DeleteResult {
  *
  * @example
  * ```ts
- * const { keys, count, cursor } = await db.list({ namespace: "users", limit: 50 });
+ * const { keys, cursor } = await db.list({ namespace: "users", limit: 50 });
  * console.log(keys);   // ["abc", "def", ...]
- * console.log(count);  // number of keys on this page
  * console.log(cursor); // "eyJrZXkiOi..." or undefined (last page)
  * ```
  */
@@ -481,8 +527,6 @@ export interface ListIdsResult {
   ok: true;
   /** Array of object keys on this page. Empty array `[]` if no objects exist. */
   keys: string[];
-  /** Number of keys returned on this page. Equivalent to `keys.length`. */
-  count: number;
   /**
    * Pass this token as `cursor` in the next call to fetch the following page.
    * `undefined` indicates there are no more pages.
@@ -496,8 +540,8 @@ export interface ListIdsResult {
  *
  * @example
  * ```ts
- * const { items, count } = await db.list<User>({ hydrate: true, limit: 50 });
- * for (const { key, data } of items) {
+ * const { keys } = await db.list<User>({ hydrate: true, limit: 50 });
+ * for (const { key, data } of keys) {
  *   console.log(key, data?.name); // data is null if the object was deleted mid-page
  * }
  * ```
@@ -510,9 +554,7 @@ export interface ListItemsResult<T = unknown> {
    * `data` may be `null` if an object existed in the index but could not be
    * retrieved from storage (e.g. deleted between index and fetch).
    */
-  items: { key: string; data: T | null }[];
-  /** Number of items returned on this page. Equivalent to `items.length`. */
-  count: number;
+  keys: { key: string; data: T | null }[];
   /**
    * Pass this token as `cursor` in the next call to fetch the following page.
    * `undefined` indicates there are no more pages.

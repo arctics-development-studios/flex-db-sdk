@@ -305,7 +305,7 @@ export function paginateListHydrated<T = unknown>(
     } as ListOptions & { hydrate: true });
 
     const r = result as ListItemsResult<T>;
-    return { data: r.items, cursor: r.cursor };
+    return { data: r.keys, cursor: r.cursor };
   };
 
   return new Paginator(fetcher);
@@ -403,7 +403,7 @@ export function paginateSearchHydrated<T = unknown, SP extends SearchParams = Se
     } as SearchOptions<SP> & { hydrate: true });
 
     const r = result as ListItemsResult<T>;
-    return { data: r.items, cursor: r.cursor };
+    return { data: r.keys, cursor: r.cursor };
   };
 
   return new Paginator(fetcher);

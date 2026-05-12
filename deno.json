@@ -1,6 +1,6 @@
 {
   "name": "@arctics/flex-db-sdk", 
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "High-performance, type-safe Flex-DB client for JS/TS applications. Engineered for 2,000+ RPS and zero-dependency environments. Optimized for Edge, long-running servers, and local development.",
   "license": "Apache-2.0",
   "publish": {

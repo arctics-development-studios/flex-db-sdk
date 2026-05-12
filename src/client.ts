@@ -39,6 +39,7 @@ import type {
   ListOptions,
   SearchOptions,
   UpdateOptions,
+  HealthResult,
   CreateResult,
   SetResult,
   GetResult,
@@ -181,15 +182,15 @@ export class FlexDBClient {
    * Useful for liveness probes, CI smoke tests, and SDK sanity-checks
    * before handling real traffic.
    *
-   * @returns `{ status: "ok" }` when the service is healthy.
+   * @returns {@link HealthResult} — `{ v: 1, ok: true, status: "healthy" }`.
    *
    * @example
    * ```ts
    * const { status } = await db.health();
-   * console.log(status); // "ok"
+   * console.log(status); // "healthy"
    * ```
    */
-  async health(): Promise<{ status: string }> {
+  async health(): Promise<HealthResult> {
     return this.#request({ method: "GET", path: "/health" });
   }
 
@@ -252,17 +253,20 @@ export class FlexDBClient {
   // ── Get ───────────────────────────────────────────────────────────────────
 
   /**
-   * Retrieves a single object by its key.
+   * Retrieves a single object and its metadata by key.
    *
-   * Supply the data type as a generic parameter to get a fully-typed result:
+   * Supply the data type `T` as a generic parameter for a fully-typed result.
+   * Supply the metadata type `SP` to get typed `metadata.sp` access:
    * ```ts
-   * const { data } = await db.get<User>("abc123");
-   * console.log(data.name); // TypeScript knows this is a string
+   * const { key, data, metadata } = await db.get<User, UserSP>("abc123");
+   * console.log(data.name);       // TypeScript knows this is a string
+   * console.log(metadata.w);      // true = warm tier (DynamoDB)
+   * console.log(metadata.sp.age); // typed as UserSP["age"]
    * ```
    *
    * @param key     - The NanoID returned from {@link create} or the key you passed to {@link set}.
    * @param options - Optional namespace override and abort signal.
-   * @returns `{ v: 1, ok: true, data: T }` with the stored object.
+   * @returns {@link GetResult} — `{ v, ok, key, data, metadata }`.
    *
    * @throws {@link FlexDBError} with `code === "ERR_NOT_FOUND"` if the key does not exist.
    * @throws {@link FlexDBError} with `code === "ERR_UNAUTHORIZED"` if the API key is invalid.
@@ -271,6 +275,12 @@ export class FlexDBClient {
    * ```ts
    * const { data } = await db.get<User>("abc123", { namespace: "users" });
    * console.log(data.name, data.age);
+   * ```
+   *
+   * @example Inspect storage tier and size
+   * ```ts
+   * const { data, metadata } = await db.get("abc123", { namespace: "users" });
+   * console.log(metadata.w ? "warm" : "cold", metadata.s, "bytes");
    * ```
    *
    * @example With cancellation
@@ -284,11 +294,11 @@ export class FlexDBClient {
    * });
    * ```
    */
-  async get<T = unknown>(
+  async get<T = unknown, SP extends SearchParams = SearchParams>(
     key: string,
     options?: GetOptions,
-  ): Promise<GetResult<T>> {
-    return this.#request<GetResult<T>>(
+  ): Promise<GetResult<T, SP>> {
+    return this.#request<GetResult<T, SP>>(
       {
         method: "GET",
         path: `/v1/${encodeURIComponent(key)}`,
@@ -402,7 +412,7 @@ export class FlexDBClient {
    * ```
    *
    * @param options - Pagination options. `hydrate` must be `false` or omitted.
-   * @returns {@link ListIdsResult} — `{ v, ok, keys, count, cursor? }`.
+   * @returns {@link ListIdsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example Manual cursor pagination
    * ```ts
@@ -431,12 +441,12 @@ export class FlexDBClient {
    * ```
    *
    * @param options - Must include `hydrate: true`. `limit` must be ≤ 50 to activate hydration.
-   * @returns {@link ListItemsResult} — `{ v, ok, items, count, cursor? }`.
+   * @returns {@link ListItemsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example
    * ```ts
-   * const { items } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
-   * for (const { key, data } of items) {
+   * const { keys } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
+   * for (const { key, data } of keys) {
    *   console.log(key, data?.name);
    * }
    * ```
@@ -480,8 +490,8 @@ export class FlexDBClient {
    * Searches for objects using fields previously indexed via `metadata`,
    * returning only their **keys**.
    *
-   * All filters are AND-ed together. An empty `filters` object `{}` returns
-   * an empty result (not an error) — this is a server-side data-leak protection measure.
+   * All filters are AND-ed together. An empty `filters` object `{}` throws
+   * `ERR_MISSING_FILTER` — unfiltered scans are not permitted.
    *
    * Provide your metadata type as the generic `SP` to get compile-time validation
    * of filter keys and value types:
@@ -493,7 +503,7 @@ export class FlexDBClient {
    * Use {@link paginateSearch} to iterate over large result sets automatically.
    *
    * @param options - Must include `filters`. `hydrate` must be `false` or omitted.
-   * @returns {@link ListIdsResult} — `{ v, ok, keys, count, cursor? }`.
+   * @returns {@link ListIdsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example Filter by price range and category
    * ```ts
@@ -519,21 +529,21 @@ export class FlexDBClient {
    * Use {@link paginateSearchHydrated} to iterate over large result sets automatically.
    *
    * @param options - Must include `filters` and `hydrate: true`. `limit` must be ≤ 50 to activate hydration.
-   * @returns {@link ListItemsResult} — `{ v, ok, items, count, cursor? }`.
+   * @returns {@link ListItemsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example
    * ```ts
    * interface Product   { title: string; price: number; }
    * interface ProductSP { price: number; category: string; }
    *
-   * const { items } = await db.search<Product, ProductSP>({
+   * const { keys } = await db.search<Product, ProductSP>({
    *   namespace: "products",
    *   filters:   { category: { sw: "elec" } },
    *   hydrate:   true,
    *   limit:     10,
    * });
    *
-   * for (const { key, data } of items) {
+   * for (const { key, data } of keys) {
    *   console.log(key, data?.title, data?.price);
    * }
    * ```
@@ -922,11 +932,11 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
    * const { data } = await users.get<User>("abc123");
    * ```
    */
-  get<T = unknown>(
+  get<T = unknown, SP extends SearchParams = SearchParams>(
     key: string,
     options?: Omit<GetOptions, "namespace">,
-  ): Promise<GetResult<T>> {
-    return this.#client.get<T>(key, { ...options, namespace: this.#namespace });
+  ): Promise<GetResult<T, SP>> {
+    return this.#client.get<T, SP>(key, { ...options, namespace: this.#namespace });
   }
 
   /**

@@ -1,6 +1,6 @@
 # FlexDB JS/TS SDK — Definition
 
-**Version:** 2.0.0  
+**Version:** 2.3.0  
 **Audience:** Application developers integrating the FlexDB SDK  
 **Purpose:** Complete reference for all exports, configuration options, methods, types, behavioral contracts, and edge cases. Use this document as the source of truth when building web documentation.
 **Note:** The package contains an sdk_definition.md file for local documentation or as context for AI Agents 
@@ -46,7 +46,7 @@
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.2.0"
+    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.3.0"
   }
 }
 ```
@@ -55,7 +55,7 @@
 // package.json (Node.js / Bun)
 {
   "dependencies": {
-    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.2.0"
+    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.3.0"
   }
 }
 ```
@@ -108,7 +108,11 @@ import type {
   BulkCreateItem,
   BulkSetItem,
 
+  // Metadata
+  ObjectMeta,
+
   // Result types
+  HealthResult,
   CreateResult,
   SetResult,
   GetResult,
@@ -144,8 +148,9 @@ const db = createClient({
 const { key } = await db.create({ name: "Alice", age: 30 });
 
 // Read
-const { data } = await db.get<{ name: string; age: number }>(key);
-console.log(data.name); // "Alice"
+const { data, metadata } = await db.get<{ name: string; age: number }>(key);
+console.log(data.name);    // "Alice"
+console.log(metadata.w);   // true = warm tier (DynamoDB)
 
 // Full replace
 await db.set(key, { name: "Alice", age: 31 });
@@ -300,13 +305,15 @@ Pings the service to verify it is reachable and healthy. No authentication requi
 **Signature**
 
 ```ts
-health(): Promise<{ status: string }>
+health(): Promise<HealthResult>
 ```
 
-**Response**
+**Response — `HealthResult`**
 
 | Field | Type | Description |
 |---|---|---|
+| `v` | `1` | Envelope version. |
+| `ok` | `true` | Indicates success. |
 | `status` | `string` | `"healthy"` when the service is healthy. |
 
 **Notes**
@@ -399,15 +406,15 @@ await db.create([1, 2, 3],        { namespace: "lists" });
 
 ### get()
 
-Retrieves a single object by its key.
+Retrieves a single object and its full metadata by key.
 
 **Signature**
 
 ```ts
-get<T = unknown>(
+get<T = unknown, SP extends SearchParams = SearchParams>(
   key:      string,
   options?: GetOptions,
-): Promise<GetResult<T>>
+): Promise<GetResult<T, SP>>
 ```
 
 **Parameters**
@@ -418,13 +425,25 @@ get<T = unknown>(
 | `options.namespace` | `string` | Conditional | Required if no default namespace is set on the client. |
 | `options.signal` | `AbortSignal` | No | Cancellation signal. |
 
-**Response — `GetResult<T>`**
+**Response — `GetResult<T, SP>`**
 
 | Field | Type | Description |
 |---|---|---|
 | `v` | `1` | Envelope version. |
 | `ok` | `true` | Indicates success. |
+| `key` | `string` | Echoes the key used to fetch this object. |
 | `data` | `T` | The stored value, deserialised. |
+| `metadata` | `ObjectMeta<SP>` | Full metadata record for this object. |
+
+**`ObjectMeta<SP>`**
+
+| Field | Type | Description |
+|---|---|---|
+| `w` | `boolean` | `true` = warm tier (DynamoDB); `false` = cold tier (S3). |
+| `s` | `number` | Serialised byte size of `data` at last write. |
+| `lut` | `number` | Last-updated Unix timestamp (seconds). |
+| `upi` | `number` | Reserved; always `0`. |
+| `sp` | `SP` | Search parameters stored with this object. |
 
 **Errors**
 
@@ -440,8 +459,16 @@ get<T = unknown>(
 ```ts
 // Typed get
 interface User { name: string; age: number; }
-const { data } = await db.get<User>("abc123", { namespace: "users" });
-console.log(data.name); // TypeScript knows this is a string
+const { key, data, metadata } = await db.get<User>("abc123", { namespace: "users" });
+console.log(data.name);          // TypeScript knows this is a string
+console.log(metadata.w);         // true = warm tier
+console.log(metadata.lut);       // Unix timestamp of last write
+console.log(metadata.s, "bytes");// stored size
+
+// Access indexed search params
+interface UserSP { age: number; role: string; }
+const { metadata: meta } = await db.get<User, UserSP>("abc123", { namespace: "users" });
+console.log(meta.sp.role); // typed as string
 
 // With cancellation
 const controller = new AbortController();
@@ -606,7 +633,6 @@ list<T = unknown>(
 | `v` | `1` | Yes | Envelope version. |
 | `ok` | `true` | Yes | Indicates success. |
 | `keys` | `string[]` | Yes | Array of object keys on this page. Empty array `[]` if no objects exist. |
-| `count` | `number` | Yes | Number of keys returned. Equivalent to `keys.length`. |
 | `cursor` | `string` | No | Next-page token. Absent on the last page. |
 
 **Hydrated response — `ListItemsResult<T>`**
@@ -615,8 +641,7 @@ list<T = unknown>(
 |---|---|---|---|
 | `v` | `1` | Yes | Envelope version. |
 | `ok` | `true` | Yes | Indicates success. |
-| `items` | `{ key: string; data: T \| null }[]` | Yes | Key-data pairs. `data` is `null` if the object was deleted between index scan and fetch. |
-| `count` | `number` | Yes | Number of items returned. Equivalent to `items.length`. |
+| `keys` | `{ key: string; data: T \| null }[]` | Yes | Key-data pairs. `data` is `null` if the object was deleted between index scan and fetch. |
 | `cursor` | `string` | No | Next-page token. Absent on the last page. |
 
 **Errors**
@@ -647,12 +672,12 @@ do {
 } while (cursor);
 
 // List full objects
-const { items } = await db.list<User>({
+const { keys } = await db.list<User>({
   namespace: "users",
   hydrate:   true,
   limit:     50,
 });
-for (const { key, data } of items) {
+for (const { key, data } of keys) {
   console.log(key, data?.name);
 }
 ```
@@ -702,7 +727,7 @@ Same as `list()` — `ListIdsResult` (non-hydrated) or `ListItemsResult<T>` (hyd
 
 **Notes**
 
-- `filters` is required and must be non-empty. An empty `filters: {}` object returns `ERR_MISSING_FILTER`.
+- `filters` is required and must be non-empty. An empty `filters: {}` object throws `FlexDBError` with `code === "ERR_MISSING_FILTER"`.
 - All filters are AND-ed. There is no OR support.
 - Do not mix cursors from `list()` with `search()` — this produces undefined behavior.
 
@@ -722,14 +747,14 @@ const { keys } = await db.search({
 interface ProductSP { price: number; category: string; inStock: boolean; }
 interface Product   { title: string; price: number; }
 
-const { items } = await db.search<Product, ProductSP>({
+const { keys } = await db.search<Product, ProductSP>({
   namespace: "products",
   filters:   { inStock: { eq: true }, price: { lte: 50 } },
   hydrate:   true,
   limit:     10,
 });
 
-for (const { key, data } of items) {
+for (const { key, data } of keys) {
   console.log(key, data?.title, data?.price);
 }
 ```
@@ -1263,8 +1288,8 @@ The SDK is fully generic with no `any` leakage in normal usage.
 
 | Generic | Where used | Meaning |
 |---|---|---|
-| `T` | `get<T>`, `list<T>`, `search<T, SP>`, `updateOne<T, SP>`, `paginateListHydrated<T>`, `paginateSearchHydrated<T, SP>` | Shape of the stored data value. |
-| `SP extends SearchParams` | `create<T, SP>`, `set<T, SP>`, `search<T, SP>`, `updateOne<T, SP>`, `update<SP>`, `bulkCreate<T, SP>`, `bulkSet<T, SP>`, `SearchOptions<SP>`, `UpdateOptions<SP>`, `Filters<SP>`, `NamespacedClient<DefaultSP>` | Shape of the metadata fields — enables compile-time validation of filter keys and operator value types. |
+| `T` | `get<T, SP>`, `list<T>`, `search<T, SP>`, `updateOne<T, SP>`, `paginateListHydrated<T>`, `paginateSearchHydrated<T, SP>` | Shape of the stored data value. |
+| `SP extends SearchParams` | `create<T, SP>`, `set<T, SP>`, `get<T, SP>`, `search<T, SP>`, `updateOne<T, SP>`, `update<SP>`, `bulkCreate<T, SP>`, `bulkSet<T, SP>`, `SearchOptions<SP>`, `UpdateOptions<SP>`, `Filters<SP>`, `NamespacedClient<DefaultSP>` | Shape of the metadata fields — enables compile-time validation of filter keys and operator value types. Also types `metadata.sp` in `GetResult`. |
 | `H extends boolean` | `ListResult<T, H>` | Conditional helper resolving to `ListItemsResult<T>` when `H = true` or `ListIdsResult` otherwise. |
 
 ### `SearchParams` type
@@ -1298,9 +1323,11 @@ const { key } = await users.create(
   { metadata: { age: 30, role: "admin" } }, // ✅ validated
 );
 
-// get: data typed as User
-const { data } = await users.get<User>(key);
-console.log(data.name); // string ✅
+// get: data typed as User, metadata.sp typed as UserSP
+const { data, metadata } = await users.get<User, UserSP>(key);
+console.log(data.name);        // string ✅
+console.log(metadata.sp.role); // "admin" | "viewer" ✅
+console.log(metadata.w);       // boolean ✅
 
 // updateOne: patch type-checked
 await users.updateOne<User, UserSP>(key, {
@@ -1442,10 +1469,10 @@ When `hydrate: true`, the server only activates full-object hydration when `limi
 
 | Scenario | Behavior |
 |---|---|
-| `filters: {}` (empty object) on `search()` | Returns `ERR_MISSING_FILTER`. |
+| `filters: {}` (empty object) on `search()` | Throws `FlexDBError` with `code === "ERR_MISSING_FILTER"`. |
 | `metadata: {}` on `set()` | Clears all previously stored metadata for the object. |
 | `data: null` in hydrated items | Object existed in the index at scan time but could not be retrieved (e.g. deleted mid-page). |
-| Empty namespace (no objects) | `list()` returns `keys: []`, `count: 0` — not an error. |
+| Empty namespace (no objects) | `list()` returns `keys: []` — not an error. |
 | Key with special characters | Keys are URL-encoded automatically before use in path parameters. |
 | Cursor from `list` used in `search` or `update` | Undefined behavior — do not mix cursors across operation types. |
 | Non-existent key in `delete()` | Always returns 200 — no existence check is performed. |

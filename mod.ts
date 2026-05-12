@@ -171,7 +171,11 @@ export type {
   BulkCreateItem,
   BulkSetItem,
 
+  // Metadata
+  ObjectMeta,
+
   // Results
+  HealthResult,
   CreateResult,
   SetResult,
   GetResult,
