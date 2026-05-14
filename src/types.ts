@@ -352,7 +352,6 @@ export interface ListOptions extends OperationOptions {
    * Maximum number of results to return per page.
    * Accepted range: 1–100. Values above 100 are silently clamped to 100.
    * Non-integer values default to 20.
-   * When `hydrate: true`, the server only activates hydration when `limit` ≤ 50.
    * @default 20
    */
   limit?: number;
@@ -364,8 +363,6 @@ export interface ListOptions extends OperationOptions {
   cursor?: string;
   /**
    * When `true`, each result includes the full stored object instead of just its key.
-   * **Only activated by the server when `limit` is ≤ 50** — if `limit` > 50,
-   * the server silently returns a non-hydrated response.
    * Changes the response type from {@link ListIdsResult} to {@link ListItemsResult}.
    */
   hydrate?: boolean;
@@ -413,6 +410,8 @@ export interface HealthResult {
   ok: true;
   /** `"healthy"` when the service is operating normally. */
   status: string;
+  /** Server version string (semver). */
+  version: string;
 }
 
 /**
@@ -536,7 +535,7 @@ export interface ListIdsResult {
 
 /**
  * Returned by {@link FlexDBClient.list} and {@link FlexDBClient.search}
- * when `hydrate: true` is set and `limit` ≤ 50 (server constraint).
+ * when `hydrate: true` is set.
  *
  * @example
  * ```ts

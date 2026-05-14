@@ -1,6 +1,6 @@
 # FlexDB JS/TS SDK — Definition
 
-**Version:** 2.3.0  
+**Version:** 2.4.0  
 **Audience:** Application developers integrating the FlexDB SDK  
 **Purpose:** Complete reference for all exports, configuration options, methods, types, behavioral contracts, and edge cases. Use this document as the source of truth when building web documentation.
 **Note:** The package contains an sdk_definition.md file for local documentation or as context for AI Agents 
@@ -46,7 +46,7 @@
 // deno.json
 {
   "imports": {
-    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.3.0"
+    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.4.0"
   }
 }
 ```
@@ -55,7 +55,7 @@
 // package.json (Node.js / Bun)
 {
   "dependencies": {
-    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.3.0"
+    "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.4.0"
   }
 }
 ```
@@ -315,6 +315,7 @@ health(): Promise<HealthResult>
 | `v` | `1` | Envelope version. |
 | `ok` | `true` | Indicates success. |
 | `status` | `string` | `"healthy"` when the service is healthy. |
+| `version` | `string` | Server version string (semver). |
 
 **Notes**
 
@@ -324,8 +325,9 @@ health(): Promise<HealthResult>
 **Example**
 
 ```ts
-const { status } = await db.health();
-console.log(status); // "healthy"
+const { status, version } = await db.health();
+console.log(status);  // "healthy"
+console.log(version); // e.g. "2.4.0"
 ```
 
 ---
@@ -623,7 +625,7 @@ list<T = unknown>(
 | `namespace` | `string` | Client default | Namespace to list. |
 | `limit` | `number` | `20` | Max results per page. Range: 1–100. See [Section 12](#12-limit-clamping--edge-cases). |
 | `cursor` | `string` | absent | Pagination token from the previous response. Treat as opaque. |
-| `hydrate` | `boolean` | `false` | When `true`, returns full object data alongside keys. Server only activates hydration when `limit` ≤ 50. |
+| `hydrate` | `boolean` | `false` | When `true`, returns full object data alongside keys. |
 | `signal` | `AbortSignal` | absent | Cancellation signal. |
 
 **Non-hydrated response — `ListIdsResult`**
@@ -657,7 +659,6 @@ list<T = unknown>(
 **Notes**
 
 - Results are in lexicographic key order within the namespace.
-- When `hydrate: true` and `limit` > 50, the SDK automatically caps the outgoing limit to 50. See [Section 12](#12-limit-clamping--edge-cases).
 - For automatic pagination, use `paginateList()` or `paginateListHydrated()`. See [Section 9](#9-pagination).
 
 **Examples**
@@ -1453,17 +1454,6 @@ try {
 | `< 1` (e.g. `0`, `-5`) | `1` |
 | `> 100` (e.g. `500`) | `100` |
 | `1–100` (valid integer) | As-is |
-
-### Hydration limit cap
-
-When `hydrate: true`, the server only activates full-object hydration when `limit ≤ 50`. The SDK prevents the type mismatch: when `hydrate: true`, the effective limit is capped to `Math.min(clampedLimit, 50)`.
-
-| `hydrate` | `limit` input | Effective limit sent |
-|---|---|---|
-| `false` | `75` | `75` |
-| `true` | `75` | `50` (capped) |
-| `true` | `30` | `30` |
-| `true` | `undefined` | Not sent (server default `20` ≤ 50 ✅) |
 
 ### Other edge cases
 

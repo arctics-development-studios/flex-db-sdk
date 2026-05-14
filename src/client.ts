@@ -182,7 +182,7 @@ export class FlexDBClient {
    * Useful for liveness probes, CI smoke tests, and SDK sanity-checks
    * before handling real traffic.
    *
-   * @returns {@link HealthResult} — `{ v: 1, ok: true, status: "healthy" }`.
+   * @returns {@link HealthResult} — `{ v: 1, ok: true, status: "healthy", version: "..." }`.
    *
    * @example
    * ```ts
@@ -429,8 +429,7 @@ export class FlexDBClient {
   /**
    * Lists objects in the namespace, returning their **full data objects**.
    *
-   * Hydration is only activated by the server when `limit` ≤ 50. Each result
-   * entry is `{ key: string; data: T | null }` — `data` may be `null` for
+   * Each result entry is `{ key: string; data: T | null }` — `data` may be `null` for
    * objects deleted between index scan and fetch.
    *
    * Use {@link paginateListHydrated} for automatic pagination:
@@ -440,7 +439,7 @@ export class FlexDBClient {
    * }
    * ```
    *
-   * @param options - Must include `hydrate: true`. `limit` must be ≤ 50 to activate hydration.
+   * @param options - Must include `hydrate: true`.
    * @returns {@link ListItemsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example
@@ -456,13 +455,8 @@ export class FlexDBClient {
   async list<T = unknown>(
     options?: ListOptions,
   ): Promise<ListIdsResult | ListItemsResult<T>> {
-    // When hydration is requested, cap limit to 50 — the server silently ignores
-    // ?full=true when limit > 50, which would cause a type mismatch at runtime
-    // (server returns ListIdsResult but TypeScript promises ListItemsResult).
     const rawLimit = options?.limit !== undefined ? clampLimit(options.limit) : undefined;
-    const effectiveLimit = options?.hydrate && rawLimit !== undefined
-      ? Math.min(rawLimit, 50)
-      : rawLimit;
+    const effectiveLimit = rawLimit;
 
     const query: Record<string, string | number | boolean | undefined> = {
       limit: effectiveLimit,
@@ -523,12 +517,11 @@ export class FlexDBClient {
   /**
    * Searches for objects using indexed metadata and returns their **full data objects**.
    *
-   * Hydration is only activated by the server when `limit` ≤ 50. Supply both data
-   * type `T` and metadata type `SP` for full end-to-end typing.
+   * Supply both data type `T` and metadata type `SP` for full end-to-end typing.
    *
    * Use {@link paginateSearchHydrated} to iterate over large result sets automatically.
    *
-   * @param options - Must include `filters` and `hydrate: true`. `limit` must be ≤ 50 to activate hydration.
+   * @param options - Must include `filters` and `hydrate: true`.
    * @returns {@link ListItemsResult} — `{ v, ok, keys, cursor? }`.
    *
    * @example
@@ -555,11 +548,8 @@ export class FlexDBClient {
   async search<T = unknown, SP extends SearchParams = SearchParams>(
     options: SearchOptions<SP>,
   ): Promise<ListIdsResult | ListItemsResult<T>> {
-    // Same hydration-limit guard as list() — cap to 50 when hydrate=true.
     const rawLimit = options.limit !== undefined ? clampLimit(options.limit) : undefined;
-    const effectiveLimit = options.hydrate && rawLimit !== undefined
-      ? Math.min(rawLimit, 50)
-      : rawLimit;
+    const effectiveLimit = rawLimit;
 
     // Per API spec: for POST /v1/search, pagination and hydration options go in
     // the request body under "options" — not as query parameters.
@@ -994,7 +984,7 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
   list(options?: Omit<ListOptions, "namespace"> & { hydrate?: false }): Promise<ListIdsResult>;
 
   /**
-   * Lists full objects in the bound namespace. Hydration activates when `limit` ≤ 50.
+   * Lists full objects in the bound namespace.
    * See {@link FlexDBClient.list} for full documentation.
    *
    * @example
@@ -1116,7 +1106,7 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
 
   /**
    * Searches for objects by indexed metadata fields in the bound namespace, returning full objects.
-   * Hydration activates when `limit` ≤ 50. See {@link FlexDBClient.search} for full documentation.
+   * See {@link FlexDBClient.search} for full documentation.
    *
    * @example
    * ```ts
