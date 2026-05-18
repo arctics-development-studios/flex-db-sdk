@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FlexDB API v2 Reference</title>
+</head>
+<body>
+
+<h1>FlexDB API v2 Reference</h1>
+
+<nav>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#authentication">Authentication</a></li>
+    <li><a href="#rate-limiting">Rate Limiting</a></li>
+    <li><a href="#errors">Errors</a></li>
+    <li><a href="#status">Status</a>
+      <ul>
+        <li><a href="#get-status">GET /</a></li>
+      </ul>
+    </li>
+    <li><a href="#admin">Admin Endpoints</a>
+      <ul>
+        <li><a href="#create-db">POST /admin/db</a></li>
+        <li><a href="#get-db">GET /admin/db/{id}</a></li>
+        <li><a href="#update-db">PATCH /admin/db/{id}</a></li>
+        <li><a href="#delete-db">DELETE /admin/db/{id}</a></li>
+        <li><a href="#create-key">POST /admin/db/{id}/keys</a></li>
+        <li><a href="#list-keys">GET /admin/db/{id}/keys</a></li>
+        <li><a href="#revoke-key">DELETE /admin/db/{id}/keys/{jti}</a></li>
+      </ul>
+    </li>
+    <li><a href="#data">Data Endpoints</a>
+      <ul>
+        <li><a href="#get-object">GET /v2/o/{ns}/{key}</a></li>
+        <li><a href="#put-object">PUT /v2/o/{ns}/{key}</a></li>
+        <li><a href="#delete-object">DELETE /v2/o/{ns}/{key}</a></li>
+        <li><a href="#list-objects">GET /v2/list/{ns}</a></li>
+        <li><a href="#search-objects">POST /v2/search/{ns}</a></li>
+        <li><a href="#bulk-get">POST /v2/bulk/get</a></li>
+        <li><a href="#bulk-set">POST /v2/bulk/set</a></li>
+        <li><a href="#bulk-create">POST /v2/bulk/create</a></li>
+        <li><a href="#bulk-delete">POST /v2/bulk/delete</a></li>
+      </ul>
+    </li>
+    <li><a href="#types">Types</a></li>
+  </ul>
+</nav>
+
+<hr>
+
+<h2 id="overview">Overview</h2>
+
+<p>FlexDB is a key-value Database-as-an-API with automatic storage tiering. All requests and responses use JSON. Every response body (success or error) carries a top-level <code>v</code> field containing the server's semver version string and a top-level <code>ok</code> boolean.</p>
+
+<h3>Base URL</h3>
+<p>The server does not mandate a particular hostname. Deploy it wherever you like and use that host as the base. All paths in this document are relative to that base.</p>
+
+<h3>Response Envelope</h3>
+<p>Every response is wrapped in a consistent envelope:</p>
+
+<h4>Success</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": { ... }
+}</code></pre>
+
+<h4>Error</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": false,
+  "error": {
+    "code": "ERR_NOT_FOUND",
+    "message": "the requested resource was not found"
+  }
+}</code></pre>
+
+<h3>Content-Type</h3>
+<p>All requests with a body must send <code>Content-Type: application/json</code>. All responses are <code>Content-Type: application/json</code>.</p>
+
+<hr>
+
+<h2 id="authentication">Authentication</h2>
+
+<p>There are two independent authentication schemes. Both use the <code>Authorization</code> HTTP header with a Bearer token.</p>
+
+<pre><code>Authorization: Bearer &lt;token&gt;</code></pre>
+
+<h3>Master Token (Admin)</h3>
+<p>A static secret configured on the server via the <code>MASTER_TOKEN</code> environment variable. Used exclusively for admin endpoints under <code>/admin/db</code>. Validated with a constant-time comparison to prevent timing attacks. There is only one master token per server deployment.</p>
+
+<h3>RS256 JWT (Data)</h3>
+<p>Signed JSON Web Tokens used for all data endpoints under <code>/v2/</code>. Tokens are issued by the server via the <a href="#create-key">Create API Key</a> endpoint and signed with a 2048-bit RSA private key (RS256 algorithm). The server validates the signature using the corresponding public key.</p>
+
+<h4>JWT Claims</h4>
+<table border="1">
+  <thead>
+    <tr><th>Claim</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>iss</td><td>string</td><td>Issuer, set from <code>JWT_ISSUER</code> env var</td></tr>
+    <tr><td>iat</td><td>number</td><td>Issued-at unix timestamp (seconds)</td></tr>
+    <tr><td>exp</td><td>number</td><td>Expiry unix timestamp (seconds). Absent if the server is configured with no expiry (<code>JWT_TOKEN_EXPIRY_SECS=0</code>)</td></tr>
+    <tr><td>jti</td><td>string</td><td>Unique token ID (nanoid-21). Used for revocation lookups.</td></tr>
+    <tr><td>db_id</td><td>string</td><td>The database this token is scoped to</td></tr>
+    <tr><td>perms</td><td>number</td><td>Permission bitmask (see below)</td></tr>
+  </tbody>
+</table>
+
+<h4>Permission Bits</h4>
+<table border="1">
+  <thead>
+    <tr><th>Value</th><th>Name</th><th>Grants access to</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>READ</td><td>GET object, LIST, SEARCH, BULK GET</td></tr>
+    <tr><td>2</td><td>WRITE</td><td>PUT object, DELETE object, BULK SET, BULK CREATE, BULK DELETE</td></tr>
+    <tr><td>3</td><td>ALL</td><td>READ + WRITE (bits 1 and 2 combined)</td></tr>
+  </tbody>
+</table>
+
+<p>Permission checks use bitwise AND: a token with <code>perms=3</code> passes both READ and WRITE checks.</p>
+
+<h4>Token Revocation</h4>
+<p>Tokens are stored in DynamoDB and cached in Redis by <code>jti</code>. A revoked token's <code>jti</code> entry is removed from both stores. The server rejects any token whose <code>jti</code> is not found in the store, even if the JWT signature is valid. Deleting a database automatically revokes all of its tokens.</p>
+
+<hr>
+
+<h2 id="rate-limiting">Rate Limiting</h2>
+
+<p>Rate limits are enforced per database on all data endpoints. There are two independent limits:</p>
+
+<table border="1">
+  <thead>
+    <tr><th>Limit</th><th>Description</th><th>Resets</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>RPS</td><td>Maximum requests per second for this database</td><td>Every second</td></tr>
+    <tr><td>Monthly</td><td>Maximum total requests per calendar month</td><td>Start of each calendar month</td></tr>
+  </tbody>
+</table>
+
+<p>When a limit is exceeded the server returns <code>429 Too Many Requests</code> with the appropriate error code (<code>ERR_RATE_LIMIT_SECOND</code> or <code>ERR_RATE_LIMIT_MONTH</code>).</p>
+
+<h3>Response Headers</h3>
+<p>Every data endpoint response (success or rate-limit error) includes these headers:</p>
+
+<table border="1">
+  <thead>
+    <tr><th>Header</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>x-ratelimit-rps-remaining</td><td>integer</td><td>Requests remaining in the current second window. Always present when an RPS limit is configured.</td></tr>
+    <tr><td>x-ratelimit-month-remaining</td><td>integer</td><td>Requests remaining in the current calendar month. Only present when a monthly limit is configured (limit &gt; 0).</td></tr>
+  </tbody>
+</table>
+
+<p>Limits are based on the database's plan type. A limit of <code>0</code> means unlimited for that dimension.</p>
+
+<hr>
+
+<h2 id="errors">Errors</h2>
+
+<p>All errors use the envelope described in <a href="#overview">Overview</a>. The <code>error.code</code> field is a stable string constant that SDK authors should match against programmatically. The <code>error.message</code> field is human-readable and may change between server versions.</p>
+
+<h3>Error Codes</h3>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_MISSING_AUTH</td><td>401</td><td>No <code>Authorization</code> header was provided</td></tr>
+    <tr><td>ERR_UNAUTHORIZED</td><td>401</td><td>Token is invalid, expired, revoked, or the master token does not match</td></tr>
+    <tr><td>ERR_PERMISSION_DENIED</td><td>403</td><td>The JWT does not have the required permission bit for this operation</td></tr>
+    <tr><td>ERR_FORBIDDEN</td><td>403</td><td>Access denied for another reason (e.g., IP whitelist)</td></tr>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>The requested object, database, or resource does not exist</td></tr>
+    <tr><td>ERR_CONFLICT</td><td>409</td><td>Key already exists (returned per-item in bulk create, not as top-level error)</td></tr>
+    <tr><td>ERR_REQUEST_TOO_LARGE</td><td>413</td><td>The serialized object size exceeds the server's configured maximum cold-storage size</td></tr>
+    <tr><td>ERR_BULK_TOO_LARGE</td><td>413</td><td>The bulk operation contains more items than the server's configured bulk limit</td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>The request body could not be parsed as valid JSON</td></tr>
+    <tr><td>ERR_RATE_LIMIT_SECOND</td><td>429</td><td>Per-second RPS limit exceeded for this database</td></tr>
+    <tr><td>ERR_RATE_LIMIT_MONTH</td><td>429</td><td>Monthly request quota exceeded for this database</td></tr>
+    <tr><td>ERR_MISSING_FILTER</td><td>400</td><td>Search request was sent without a non-empty <code>filters</code> array</td></tr>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td>A required parameter is missing or has an invalid value</td></tr>
+    <tr><td>ERR_STORE_FAILED</td><td>500</td><td>A storage write operation failed internally</td></tr>
+    <tr><td>ERR_DELETE_FAILED</td><td>500</td><td>A storage delete operation failed internally</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Unexpected internal server error</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="status">Status</h2>
+
+<h3 id="get-status">GET /</h3>
+<p>Returns server liveness and version. Requires no authentication. Use this as a health check endpoint.</p>
+
+<h4>Request</h4>
+<p>No parameters, no body.</p>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "status": "ok",
+    "version": "2.5.0"
+  }
+}</code></pre>
+
+<hr>
+
+<h2 id="admin">Admin Endpoints</h2>
+
+<p>All admin endpoints require a Master Token in the <code>Authorization: Bearer</code> header. The token is validated with a constant-time comparison. Any mismatch returns <code>401 ERR_UNAUTHORIZED</code>. All admin endpoints can return the following errors in addition to those listed per-endpoint:</p>
+
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_MISSING_AUTH</td><td>401</td><td>No Authorization header</td></tr>
+    <tr><td>ERR_UNAUTHORIZED</td><td>401</td><td>Token does not match MASTER_TOKEN</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="create-db">POST /admin/db — Create Database</h3>
+<p>Creates a new database with the specified name and plan type. Returns the full database record including computed limits and initial usage counters.</p>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>name</td><td>string</td><td>Yes</td><td>Human-readable name for the database</td></tr>
+    <tr><td>db_type</td><td>string</td><td>Yes</td><td>Plan type. One of: <code>dev</code>, <code>start</code>, <code>pro</code>, <code>ent</code>, <code>arch</code></td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "name": "my-app-db",
+  "db_type": "pro"
+}</code></pre>
+
+<h4>Response — 201 Created</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "id": "V1StGXR8Z5jdHi6HmyT2v",
+    "name": "my-app-db",
+    "db_type": "pro",
+    "region": "us-east-1",
+    "created_at": 1747440000,
+    "limits": {
+      "rps": 500,
+      "month": 5000000,
+      "storage_gb": 50,
+      "egress_gb": 100
+    },
+    "usage": {
+      "req_this_month": 0,
+      "storage_bytes": 0,
+      "egress_bytes": 0
+    },
+    "usage_history": [],
+    "overage": {
+      "req": 0,
+      "storage_bytes": 0,
+      "egress_bytes": 0
+    }
+  }
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td>Missing or invalid <code>name</code> / <code>db_type</code></td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage failure during creation</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="get-db">GET /admin/db/{id} — Get Database</h3>
+<p>Retrieves the full record for a single database by its ID.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID (nanoid-21) returned from Create Database</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK</h4>
+<p>Same structure as <a href="#create-db">Create Database</a> response data.</p>
+
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "id": "V1StGXR8Z5jdHi6HmyT2v",
+    "name": "my-app-db",
+    "db_type": "pro",
+    "region": "us-east-1",
+    "created_at": 1747440000,
+    "limits": { "rps": 500, "month": 5000000, "storage_gb": 50, "egress_gb": 100 },
+    "usage": { "req_this_month": 12340, "storage_bytes": 204800, "egress_bytes": 1048576 },
+    "usage_history": [
+      { "month": "2026-04", "usage": { "req": 980000, "storage_bytes": 204800, "egress_bytes": 2097152 } }
+    ],
+    "overage": { "req": 0, "storage_bytes": 0, "egress_bytes": 0 }
+  }
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>No database with this ID exists</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage read failure</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="update-db">PATCH /admin/db/{id} — Update Database</h3>
+<p>Updates mutable fields of a database record. Currently only the name is mutable.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>name</td><td>string</td><td>No</td><td>New human-readable name for the database</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "name": "renamed-db"
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<p>Returns the updated full database record (same structure as <a href="#get-db">Get Database</a>).</p>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>No database with this ID exists</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage write failure</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="delete-db">DELETE /admin/db/{id} — Delete Database</h3>
+<p>Permanently deletes the database, revokes all of its API keys, and wipes all stored objects across every storage tier. This operation is irreversible.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {}
+}</code></pre>
+
+<h4>Side Effects</h4>
+<ul>
+  <li>All tokens associated with this database are deleted from DynamoDB and Redis (revoked)</li>
+  <li>The database context cache in Redis is invalidated</li>
+  <li>All object data across L1, L2, KV, and Cold tiers for this database is purged</li>
+</ul>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>No database with this ID exists</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage failure during deletion</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="create-key">POST /admin/db/{id}/keys — Create API Key</h3>
+<p>Issues a new RS256-signed JWT for the specified database. The token is stored in DynamoDB and cached in Redis. The raw JWT string is returned once — it is not retrievable again after this call.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID the token will be scoped to</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>perms</td><td>number</td><td>Yes</td><td>Permission bitmask: <code>1</code> (READ), <code>2</code> (WRITE), or <code>3</code> (ALL)</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "perms": 3
+}</code></pre>
+
+<h4>Response — 201 Created</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmbGV4ZGIiLCJpYXQiOjE3NDc0NDAwMDAsImV4cCI6MTc0ODAzMjAwMCwianRpIjoiVjFTdEdYUjhaNWpkSGk2SG15VDJ2IiwiZGJfaWQiOiJhYmMxMjMiLCJwZXJtcyI6M30.SIGNATURE"
+  }
+}</code></pre>
+
+<p>The <code>token</code> field is the complete, signed JWT string. Store it securely. The server does not expose it again — only the <code>jti</code> is stored for revocation purposes.</p>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>Database with this ID does not exist</td></tr>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td>Invalid <code>perms</code> value</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>JWT signing or storage failure</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="list-keys">GET /admin/db/{id}/keys — List API Keys</h3>
+<p>Returns metadata for all active (non-revoked) API keys associated with a database. Does not return the JWT strings themselves, only the token metadata.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": [
+    {
+      "jti": "V1StGXR8Z5jdHi6HmyT2v",
+      "db_id": "abc123",
+      "perms": 3
+    },
+    {
+      "jti": "Kf9mNpQr2wXe7LvUo4YcA",
+      "db_id": "abc123",
+      "perms": 1
+    }
+  ]
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>Database with this ID does not exist</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage read failure</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="revoke-key">DELETE /admin/db/{id}/keys/{jti} — Revoke API Key</h3>
+<p>Immediately revokes an API key. Any subsequent request using a JWT with this <code>jti</code> will be rejected with <code>401 ERR_UNAUTHORIZED</code>. This operation is idempotent — revoking an already-revoked or non-existent token returns success.</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>id</td><td>string</td><td>Database ID</td></tr>
+    <tr><td>jti</td><td>string</td><td>Token ID (from the <code>jti</code> claim in the JWT, or from list keys)</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {}
+}</code></pre>
+
+<h4>Side Effects</h4>
+<ul>
+  <li>Token record deleted from DynamoDB (both the per-DB and the global token lookup records)</li>
+  <li>Token cache entry deleted from Redis</li>
+</ul>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Storage failure during revocation</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="data">Data Endpoints</h2>
+
+<p>All data endpoints require a valid RS256 JWT in the <code>Authorization: Bearer</code> header. The middleware chain applied to every data request is:</p>
+
+<ol>
+  <li><strong>JWT validation</strong> — verifies signature, optional expiry, and <code>jti</code> presence in the token store</li>
+  <li><strong>DB context load</strong> — loads the database limits from Redis cache (falls back to DynamoDB)</li>
+  <li><strong>Rate limit enforcement</strong> — checks RPS and monthly quota; rejects with 429 if exceeded</li>
+  <li><strong>Egress tracking</strong> — records response byte count asynchronously after the response is sent</li>
+</ol>
+
+<p>All data endpoints can return these errors in addition to those listed per-endpoint:</p>
+
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_MISSING_AUTH</td><td>401</td><td>No Authorization header</td></tr>
+    <tr><td>ERR_UNAUTHORIZED</td><td>401</td><td>Invalid JWT signature, expired token, or revoked jti</td></tr>
+    <tr><td>ERR_PERMISSION_DENIED</td><td>403</td><td>Token lacks the required permission bit</td></tr>
+    <tr><td>ERR_RATE_LIMIT_SECOND</td><td>429</td><td>RPS limit exceeded</td></tr>
+    <tr><td>ERR_RATE_LIMIT_MONTH</td><td>429</td><td>Monthly quota exceeded</td></tr>
+    <tr><td>ERR_INTERNAL</td><td>500</td><td>Internal server error</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="get-object">GET /v2/o/{ns}/{key} — Get Object</h3>
+<p>Retrieves a single object by namespace and key. The server checks storage tiers in order (L1 → L2 → DynamoDB → S3) and populates hotter tiers on a miss. A background task increments the object's access counter and may promote or demote it between tiers.</p>
+
+<h4>Required Permission</h4>
+<p>READ (bit 1)</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Namespace — a logical grouping of keys within the database</td></tr>
+    <tr><td>key</td><td>string</td><td>Object key within the namespace</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "key": "user:42",
+    "data": { "name": "Alice", "score": 9001 },
+    "meta": {
+      "warm": true,
+      "size": 38,
+      "updated_at": 1747440000,
+      "sp": { "score": 9001, "tag": "admin" }
+    }
+  }
+}</code></pre>
+
+<h4>Response Fields</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>data.key</td><td>string</td><td>The object's key as stored</td></tr>
+    <tr><td>data.data</td><td>any JSON</td><td>The stored value — any valid JSON (object, array, string, number, boolean, null)</td></tr>
+    <tr><td>data.meta.warm</td><td>boolean</td><td><code>true</code> if stored in DynamoDB (warm tier), <code>false</code> if in S3 (cold tier)</td></tr>
+    <tr><td>data.meta.size</td><td>number</td><td>Serialized size in bytes</td></tr>
+    <tr><td>data.meta.updated_at</td><td>number</td><td>Unix timestamp (seconds) of last write</td></tr>
+    <tr><td>data.meta.sp</td><td>object</td><td>User-supplied search parameters (see <a href="#put-object">PUT Object</a>)</td></tr>
+  </tbody>
+</table>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_NOT_FOUND</td><td>404</td><td>No object with this namespace+key exists in this database</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="put-object">PUT /v2/o/{ns}/{key} — Put Object</h3>
+<p>Creates or replaces an object. If the key does not exist, returns <code>201 Created</code>. If the key already exists, replaces it and returns <code>200 OK</code>.</p>
+
+<p>The server determines the storage tier automatically based on the serialized size of the <code>data</code> field:</p>
+<ul>
+  <li>Size &le; <code>KV_MAX_SIZE</code> → DynamoDB (warm tier)</li>
+  <li>Size &gt; <code>KV_MAX_SIZE</code> → S3 (cold tier)</li>
+</ul>
+
+<p>The server invalidates L1 and L2 caches before writing, then populates both after the write completes.</p>
+
+<h4>Required Permission</h4>
+<p>WRITE (bit 2)</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Namespace</td></tr>
+    <tr><td>key</td><td>string</td><td>Object key</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>data</td><td>any JSON</td><td>Yes</td><td>The value to store. May be any valid JSON value.</td></tr>
+    <tr><td>sp</td><td>object</td><td>No</td><td>Search parameters. A flat object of <code>string → scalar</code> pairs used for filtered queries. Field names must be alphanumeric plus underscore, max 64 chars. Values must be JSON scalars (string, number, boolean). Defaults to <code>{}</code>.</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "data": { "name": "Alice", "score": 9001 },
+  "sp": { "score": 9001, "tag": "admin" }
+}</code></pre>
+
+<h4>Response — 201 Created (new key) or 200 OK (existing key)</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "key": "user:42"
+  }
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_REQUEST_TOO_LARGE</td><td>413</td><td>Serialized <code>data</code> exceeds <code>COLD_MAX_SIZE</code> server limit</td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+    <tr><td>ERR_STORE_FAILED</td><td>500</td><td>Storage write failed</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="delete-object">DELETE /v2/o/{ns}/{key} — Delete Object</h3>
+<p>Removes an object from all storage tiers (L1, L2, DynamoDB, S3) in parallel. Also removes associated search index entries. The operation is idempotent — deleting a non-existent key returns success.</p>
+
+<h4>Required Permission</h4>
+<p>WRITE (bit 2)</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Namespace</td></tr>
+    <tr><td>key</td><td>string</td><td>Object key</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 204 No Content</h4>
+<p>Empty body. No JSON envelope.</p>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_DELETE_FAILED</td><td>500</td><td>Storage deletion failed</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="list-objects">GET /v2/list/{ns} — List Objects</h3>
+<p>Returns a paginated list of all keys in a namespace. Optionally hydrates each key with its full stored value.</p>
+
+<h4>Required Permission</h4>
+<p>READ (bit 1)</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Namespace to list</td></tr>
+  </tbody>
+</table>
+
+<h4>Query Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>limit</td><td>number</td><td>100</td><td>Maximum items to return. Clamped to [1, 1000].</td></tr>
+    <tr><td>cursor</td><td>string</td><td>—</td><td>Opaque pagination cursor from a previous response. Omit for the first page.</td></tr>
+    <tr><td>full</td><td>boolean</td><td>false</td><td>When <code>true</code>, returns full objects with data and metadata. When <code>false</code>, returns only key strings.</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<p>None.</p>
+
+<h4>Response — 200 OK (keys only, full=false)</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "keys": ["user:1", "user:2", "user:42"],
+    "cursor": "eyJsYXN0S2V5IjoidXNlcjo0MiJ9"
+  }
+}</code></pre>
+
+<h4>Response — 200 OK (hydrated, full=true)</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "items": [
+      {
+        "key": "user:1",
+        "data": { "name": "Bob", "score": 42 },
+        "meta": { "warm": true, "size": 27, "updated_at": 1747440000, "sp": {} }
+      }
+    ],
+    "cursor": null
+  }
+}</code></pre>
+
+<h4>Pagination</h4>
+<p>When <code>cursor</code> in the response is <code>null</code>, there are no more pages. Pass the cursor value as the <code>cursor</code> query parameter to retrieve the next page. Cursors are opaque — do not parse or construct them manually.</p>
+
+<hr>
+
+<h3 id="search-objects">POST /v2/search/{ns} — Search Objects</h3>
+<p>Filters objects in a namespace by their search parameters (<code>sp</code> field set during <a href="#put-object">PUT Object</a>). Returns a paginated result in the same format as <a href="#list-objects">List Objects</a>.</p>
+
+<h4>Required Permission</h4>
+<p>READ (bit 1)</p>
+
+<h4>Path Parameters</h4>
+<table border="1">
+  <thead>
+    <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Namespace to search within</td></tr>
+  </tbody>
+</table>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>filters</td><td>array</td><td>Yes</td><td>Non-empty array of filter objects (see below). All filters are ANDed together.</td></tr>
+    <tr><td>limit</td><td>number</td><td>No</td><td>Maximum items to return, default 100, clamped to [1, 1000]</td></tr>
+    <tr><td>cursor</td><td>string</td><td>No</td><td>Pagination cursor from previous response</td></tr>
+    <tr><td>full</td><td>boolean</td><td>No</td><td>When <code>true</code>, returns full objects. Default <code>false</code>.</td></tr>
+  </tbody>
+</table>
+
+<h4>Filter Object</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>field</td><td>string</td><td>Yes</td><td>The <code>sp</code> field name to filter on</td></tr>
+    <tr><td>op</td><td>string</td><td>Yes</td><td>Comparison operator. One of: <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>contains</code>, <code>starts_with</code></td></tr>
+    <tr><td>value</td><td>scalar</td><td>Yes</td><td>The value to compare against. Must be a JSON scalar (string, number, or boolean).</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "filters": [
+    { "field": "score", "op": "gte", "value": 1000 },
+    { "field": "tag", "op": "eq", "value": "admin" }
+  ],
+  "limit": 50,
+  "full": true
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<p>Same structure as <a href="#list-objects">List Objects</a> response (either <code>keys</code> or <code>items</code> depending on <code>full</code>, with <code>cursor</code>).</p>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_MISSING_FILTER</td><td>400</td><td><code>filters</code> array is absent or empty</td></tr>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td>A filter object is missing required fields or has an invalid <code>op</code></td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="bulk-get">POST /v2/bulk/get — Bulk Get</h3>
+<p>Retrieves multiple objects by key in a single request. Missing keys are included in the response with <code>data: null</code>. The response order matches the input key order.</p>
+
+<h4>Required Permission</h4>
+<p>READ (bit 1)</p>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Yes</td><td>Namespace for all keys</td></tr>
+    <tr><td>keys</td><td>string[]</td><td>Yes</td><td>Non-empty array of object keys to retrieve. Max length determined by server's <code>BULK_SET_LIMIT</code> config.</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "ns": "users",
+  "keys": ["user:1", "user:42", "user:999"]
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {
+    "items": [
+      { "key": "user:1", "data": { "name": "Bob" } },
+      { "key": "user:42", "data": { "name": "Alice" } },
+      { "key": "user:999", "data": null }
+    ]
+  }
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td><code>keys</code> array is absent or empty</td></tr>
+    <tr><td>ERR_BULK_TOO_LARGE</td><td>413</td><td>Number of keys exceeds <code>BULK_SET_LIMIT</code></td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="bulk-set">POST /v2/bulk/set — Bulk Set</h3>
+<p>Creates or replaces multiple objects in a single request. Each item is processed independently; a failure on one item does not block others. Returns a per-item result array.</p>
+
+<h4>Required Permission</h4>
+<p>WRITE (bit 2)</p>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Yes</td><td>Namespace for all items</td></tr>
+    <tr><td>items</td><td>array</td><td>Yes</td><td>Non-empty array of item objects (see below)</td></tr>
+  </tbody>
+</table>
+
+<h4>Item Object</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>key</td><td>string</td><td>Yes</td><td>Object key</td></tr>
+    <tr><td>data</td><td>any JSON</td><td>Yes</td><td>Value to store</td></tr>
+    <tr><td>sp</td><td>object</td><td>No</td><td>Search parameters (see <a href="#put-object">PUT Object</a>). Defaults to <code>{}</code>.</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "ns": "users",
+  "items": [
+    { "key": "user:1", "data": { "name": "Bob" }, "sp": { "score": 42 } },
+    { "key": "user:2", "data": { "name": "Carol" } }
+  ]
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": [
+    { "key": "user:1", "ok": true },
+    { "key": "user:2", "ok": false, "error": "store failed" }
+  ]
+}</code></pre>
+
+<h4>Response Item Fields</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>key</td><td>string</td><td>The item's key</td></tr>
+    <tr><td>ok</td><td>boolean</td><td><code>true</code> if the item was stored successfully</td></tr>
+    <tr><td>error</td><td>string</td><td>Present only when <code>ok</code> is <code>false</code>. Human-readable error detail for this item.</td></tr>
+  </tbody>
+</table>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td><code>items</code> array is absent or empty</td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="bulk-create">POST /v2/bulk/create — Bulk Create</h3>
+<p>Creates multiple objects, but only if the key does not already exist. If a key already exists, that item is skipped and flagged with <code>conflict: true</code> — it does not cause the entire request to fail. Other items in the same request are still processed.</p>
+
+<h4>Required Permission</h4>
+<p>WRITE (bit 2)</p>
+
+<h4>Request Body</h4>
+<p>Same structure as <a href="#bulk-set">Bulk Set</a>.</p>
+
+<pre><code>{
+  "ns": "users",
+  "items": [
+    { "key": "user:1", "data": { "name": "Bob" } },
+    { "key": "user:3", "data": { "name": "Dave" } }
+  ]
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": [
+    { "key": "user:1", "ok": false, "conflict": true },
+    { "key": "user:3", "ok": true, "conflict": false }
+  ]
+}</code></pre>
+
+<h4>Response Item Fields</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>key</td><td>string</td><td>The item's key</td></tr>
+    <tr><td>ok</td><td>boolean</td><td><code>true</code> if the item was created successfully</td></tr>
+    <tr><td>conflict</td><td>boolean</td><td><code>true</code> if the key already existed and the item was not written</td></tr>
+  </tbody>
+</table>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td><code>items</code> array is absent or empty</td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h3 id="bulk-delete">POST /v2/bulk/delete — Bulk Delete</h3>
+<p>Removes multiple objects by key in a single request. The operation is idempotent — non-existent keys are silently ignored.</p>
+
+<h4>Required Permission</h4>
+<p>WRITE (bit 2)</p>
+
+<h4>Request Body</h4>
+<table border="1">
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ns</td><td>string</td><td>Yes</td><td>Namespace for all keys</td></tr>
+    <tr><td>keys</td><td>string[]</td><td>Yes</td><td>Non-empty array of object keys to delete</td></tr>
+  </tbody>
+</table>
+
+<pre><code>{
+  "ns": "users",
+  "keys": ["user:1", "user:2"]
+}</code></pre>
+
+<h4>Response — 200 OK</h4>
+<pre><code>{
+  "v": "2.5.0",
+  "ok": true,
+  "data": {}
+}</code></pre>
+
+<h4>Additional Errors</h4>
+<table border="1">
+  <thead>
+    <tr><th>Code</th><th>HTTP Status</th><th>Condition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ERR_INVALID_REQUEST</td><td>400</td><td><code>keys</code> array is absent or empty</td></tr>
+    <tr><td>ERR_UNPROCESSABLE_ENTITY</td><td>422</td><td>Request body is not valid JSON</td></tr>
+    <tr><td>ERR_DELETE_FAILED</td><td>500</td><td>Storage deletion failed</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="types">Types</h2>
+
+<p>This section defines the canonical shapes for complex objects referenced throughout this document.</p>
+
+<h3>DbRecord</h3>
+<p>Represents a database and its current state. Returned by Create, Get, and Update database endpoints.</p>
+<pre><code>{
+  "id": "string — nanoid-21 unique identifier",
+  "name": "string — human-readable name",
+  "db_type": "string — plan tier: dev | start | pro | ent | arch",
+  "region": "string — AWS region where data is stored",
+  "created_at": "number — unix timestamp (seconds) of creation",
+  "limits": {
+    "rps": "number — max requests per second (0 = unlimited)",
+    "month": "number — max requests per calendar month (0 = unlimited)",
+    "storage_gb": "number — max storage in gigabytes",
+    "egress_gb": "number — max egress in gigabytes per month"
+  },
+  "usage": {
+    "req_this_month": "number — requests made in the current calendar month",
+    "storage_bytes": "number — current storage used in bytes",
+    "egress_bytes": "number — egress used in the current month in bytes"
+  },
+  "usage_history": [
+    {
+      "month": "string — YYYY-MM",
+      "usage": {
+        "req": "number",
+        "storage_bytes": "number",
+        "egress_bytes": "number"
+      }
+    }
+  ],
+  "overage": {
+    "req": "number — requests over the monthly limit",
+    "storage_bytes": "number — bytes over the storage limit",
+    "egress_bytes": "number — bytes over the egress limit"
+  }
+}</code></pre>
+
+<h3>PlanLimits</h3>
+<p>The set of hard limits assigned to a database based on its <code>db_type</code> (plan). These are configured server-side and are not modifiable per-database.</p>
+<pre><code>{
+  "rps": "number — requests per second cap",
+  "month": "number — monthly request cap",
+  "storage_gb": "number — storage cap in GB",
+  "egress_gb": "number — egress cap in GB per month"
+}</code></pre>
+
+<h3>ObjectMeta</h3>
+<p>Metadata attached to every stored object. Returned alongside the object's <code>data</code> in GET and full-hydration list/search responses.</p>
+<pre><code>{
+  "warm": "boolean — true if object resides in DynamoDB, false if in S3",
+  "size": "number — serialized byte size of the stored value",
+  "updated_at": "number — unix timestamp (seconds) of the last write",
+  "sp": "object — user-supplied search parameters: { [field: string]: string | number | boolean }"
+}</code></pre>
+
+<h3>TokenRecord</h3>
+<p>Metadata for an issued API key. Returned by the List API Keys endpoint. The JWT string itself is never returned again after issuance.</p>
+<pre><code>{
+  "jti": "string — unique token ID (nanoid-21), matches the jti JWT claim",
+  "db_id": "string — database this token is scoped to",
+  "perms": "number — permission bitmask (1=READ, 2=WRITE, 3=ALL)"
+}</code></pre>
+
+<h3>SearchFilter</h3>
+<p>A single filter condition used in the Search endpoint. Multiple filters are ANDed together.</p>
+<pre><code>{
+  "field": "string — sp field name to filter on",
+  "op": "string — eq | ne | gt | gte | lt | lte | contains | starts_with",
+  "value": "string | number | boolean — scalar value to compare against"
+}</code></pre>
+
+<h3>BulkResultItem (Set / Create)</h3>
+<p>Per-item result returned in the <code>data</code> array of Bulk Set and Bulk Create responses.</p>
+<pre><code>{
+  "key": "string",
+  "ok": "boolean",
+  "error": "string — present only in Bulk Set when ok=false",
+  "conflict": "boolean — present only in Bulk Create; true if key already existed"
+}</code></pre>
+
+<h3>BulkGetItem</h3>
+<p>Per-item result returned in the <code>data.items</code> array of Bulk Get responses.</p>
+<pre><code>{
+  "key": "string",
+  "data": "any JSON | null — null if the key does not exist"
+}</code></pre>
+
+<h3>Storage Tiers (Informational)</h3>
+<p>The server transparently manages four storage tiers. SDK authors do not control tier assignment directly — it is automatic based on object size and access frequency.</p>
+<table border="1">
+  <thead>
+    <tr><th>Tier</th><th>Technology</th><th>When Used</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>L1 (in-process)</td><td>Moka (in-memory)</td><td>Hot objects, zero network latency, process lifetime</td></tr>
+    <tr><td>L2 (cache)</td><td>Valkey / Redis</td><td>Warm objects, shared across Lambda instances</td></tr>
+    <tr><td>KV (warm)</td><td>DynamoDB</td><td>Objects at or below <code>KV_MAX_SIZE</code></td></tr>
+    <tr><td>Cold</td><td>S3</td><td>Objects above <code>KV_MAX_SIZE</code></td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

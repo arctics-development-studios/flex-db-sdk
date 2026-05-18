@@ -27,7 +27,7 @@ import { FlexDBError, FlexDBNetworkError, RetryConfig } from "./types.ts";
  */
 export interface RequestOptions {
   /** HTTP method for this request. */
-  method: "GET" | "POST" | "PUT" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Path appended to the client's `baseUrl`, e.g. `"/v1/list"`. */
   path: string;
   /** Additional HTTP headers merged on top of the default `Authorization` and `Content-Type` headers. */
@@ -66,20 +66,18 @@ function clampRetryTimes(n: number): number {
 /**
  * Normalises a `limit` query parameter value to match server-side clamping behaviour.
  *
- * - Values above 100 are clamped to 100.
- * - Non-integer or `NaN` values default to 20.
+ * - Values above 1000 are clamped to 1000.
+ * - Non-integer or `NaN` values default to 100.
  * - Values below 1 are clamped to 1.
  *
- * This mirrors the server's own clamping so the SDK sends a predictable value.
- *
  * @param n - Raw limit value from caller options.
- * @returns Normalised integer limit in the range `[1, 100]`, or `20` for invalid input.
+ * @returns Normalised integer limit in the range `[1, 1000]`, or `100` for invalid input.
  */
 export function clampLimit(n: unknown): number {
-  if (n === undefined || n === null) return 20;
+  if (n === undefined || n === null) return 100;
   const parsed = Number(n);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 20;
-  if (parsed > 100) return 100;
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 100;
+  if (parsed > 1000) return 1000;
   if (parsed < 1) return 1;
   return parsed;
 }
