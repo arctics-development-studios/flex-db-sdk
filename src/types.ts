@@ -86,7 +86,7 @@ export interface OperationOptions {
  * A flat key-value map of fields to index at write-time via the `sp` option.
  * Values must be JSON scalars (string, number, boolean).
  */
-export type SearchParams = Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+export type SearchParams = Record<string, string | number | boolean>;
 
 // ── Filter Operators ───────────────────────────────────────────────────────
 

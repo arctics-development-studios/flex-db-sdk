@@ -74,7 +74,8 @@ function mapMeta<SP extends SearchParams>(raw: {
   size: number;
   updated_at: number;
   sp: SP;
-}): ObjectMeta<SP> {
+} | null | undefined): ObjectMeta<SP> {
+  if (!raw) return { warm: false, size: 0, updatedAt: 0, sp: {} as SP };
   return { warm: raw.warm, size: raw.size, updatedAt: raw.updated_at, sp: raw.sp };
 }
 

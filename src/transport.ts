@@ -162,10 +162,12 @@ export async function request<T = unknown>(
   const url = buildUrl(baseUrl, opts.path, opts.query);
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     Authorization: authHeader,
     ...opts.headers,
   };
+  if (opts.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
 
   const fetchInit: RequestInit = {
     method: opts.method,
@@ -219,6 +221,9 @@ export async function request<T = unknown>(
       }
 
       const err = new FlexDBError(response.status, message, errorBody, code, hint);
+
+      // Monthly quota is exhausted until next month — retrying is pointless
+      if (code === "ERR_RATE_LIMIT_MONTH") throw err;
 
       // Only retry on transient server errors
       if (attempt < maxAttempts && isRetryable(response.status)) {
