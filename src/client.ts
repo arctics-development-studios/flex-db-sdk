@@ -28,6 +28,8 @@ import type {
   OperationOptions,
   SearchParams,
   Filters,
+  CreateOptions,
+  CreateResult,
   SetOptions,
   GetOptions,
   DeleteOptions,
@@ -39,14 +41,12 @@ import type {
   DeleteResult,
   ListIdsResult,
   ListItemsResult,
-  BulkGetItem,
   BulkGetResult,
   BulkCreateItem,
   BulkCreateResult,
   BulkSetItem,
   BulkSetResult,
   BulkDeleteResult,
-  ObjectMeta,
 } from "./types.ts";
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -66,17 +66,6 @@ function filtersToArray(filters: Filters): { field: string; op: string; value: u
     }
   }
   return result;
-}
-
-/** Maps the raw API `meta` object (snake_case) to the SDK's `ObjectMeta` (camelCase). */
-function mapMeta<SP extends SearchParams>(raw: {
-  warm: boolean;
-  size: number;
-  updated_at: number;
-  sp: SP;
-} | null | undefined): ObjectMeta<SP> {
-  if (!raw) return { warm: false, size: 0, updatedAt: 0, sp: {} as SP };
-  return { warm: raw.warm, size: raw.size, updatedAt: raw.updated_at, sp: raw.sp };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +141,38 @@ export class FlexDBClient {
     return { v: raw.v, ok: true, status: raw.data.status, version: raw.data.version };
   }
 
+  // ── Create ────────────────────────────────────────────────────────────────
+
+  /**
+   * Creates an object with a server-generated nanoid key.
+   *
+   * The key is returned in the response and is always a valid nanoid(21).
+   * The object is immediately readable via {@link get} but will not appear
+   * in {@link list} or {@link search} for up to ~60 seconds (write-buffer lag).
+   *
+   * @example
+   * ```ts
+   * const { key } = await db.create({ name: "Alice", score: 9001 }, {
+   *   namespace: "users",
+   *   sp: { score: 9001, role: "admin" },
+   * });
+   * ```
+   */
+  async create<T, SP extends SearchParams = SearchParams>(
+    value: T,
+    options?: CreateOptions<SP>,
+  ): Promise<CreateResult> {
+    const ns = this.#ns(options);
+    const body: Record<string, unknown> = { data: value };
+    if (options?.sp !== undefined) body.sp = options.sp;
+
+    const raw = await this.#request<{ v: string; ok: boolean; data: { id: string } }>(
+      { method: "POST", path: `/v2/o/${encodeURIComponent(ns)}`, body },
+      options,
+    );
+    return { key: raw.data.id };
+  }
+
   // ── Get ───────────────────────────────────────────────────────────────────
 
   /**
@@ -161,25 +182,20 @@ export class FlexDBClient {
    *
    * @example
    * ```ts
-   * const { key, data, meta } = await db.get<User>("user:42", { namespace: "users" });
-   * console.log(data.name);       // "Alice"
-   * console.log(meta.warm);       // true = DynamoDB
-   * console.log(meta.updatedAt);  // unix timestamp
+   * const { data } = await db.get<User>("user:42", { namespace: "users" });
+   * console.log(data.name); // "Alice"
    * ```
    */
-  async get<T = unknown, SP extends SearchParams = SearchParams>(
+  async get<T = unknown>(
     key: string,
     options?: GetOptions,
-  ): Promise<GetResult<T, SP>> {
+  ): Promise<GetResult<T>> {
     const ns = this.#ns(options);
-    const raw = await this.#request<{
-      v: string; ok: boolean;
-      data: { key: string; data: T; meta: { warm: boolean; size: number; updated_at: number; sp: SP } };
-    }>(
+    const raw = await this.#request<{ v: string; ok: boolean; data: { data: T } }>(
       { method: "GET", path: `/v2/o/${encodeURIComponent(ns)}/${encodeURIComponent(key)}` },
       options,
     );
-    return { key: raw.data.key, data: raw.data.data, meta: mapMeta(raw.data.meta) };
+    return { data: raw.data.data };
   }
 
   // ── Set ───────────────────────────────────────────────────────────────────
@@ -207,11 +223,11 @@ export class FlexDBClient {
     const body: Record<string, unknown> = { data: value };
     if (options?.sp !== undefined) body.sp = options.sp;
 
-    const raw = await this.#request<{ v: string; ok: boolean; data: { key: string } }>(
+    await this.#request<{ v: string; ok: boolean; data: Record<string, never> }>(
       { method: "PUT", path: `/v2/o/${encodeURIComponent(ns)}/${encodeURIComponent(key)}`, body },
       options,
     );
-    return { key: raw.data.key };
+    return { key };
   }
 
   // ── Delete ────────────────────────────────────────────────────────────────
@@ -249,33 +265,33 @@ export class FlexDBClient {
   async list(options?: ListOptions & { hydrate?: false }): Promise<ListIdsResult>;
 
   /**
-   * Lists all objects in a namespace, returning full objects with metadata.
+   * Lists all objects in a namespace, returning full objects.
    *
    * @example
    * ```ts
    * const { items } = await db.list<User>({ namespace: "users", hydrate: true, limit: 50 });
-   * for (const { key, data, meta } of items) console.log(key, data.name);
+   * for (const { key, data } of items) console.log(key, data.name);
    * ```
    */
-  async list<T = unknown, SP extends SearchParams = SearchParams>(
+  async list<T = unknown>(
     options: ListOptions & { hydrate: true },
-  ): Promise<ListItemsResult<T, SP>>;
+  ): Promise<ListItemsResult<T>>;
 
-  async list<T = unknown, SP extends SearchParams = SearchParams>(
+  async list<T = unknown>(
     options?: ListOptions,
-  ): Promise<ListIdsResult | ListItemsResult<T, SP>> {
+  ): Promise<ListIdsResult | ListItemsResult<T>> {
     const ns = this.#ns(options);
     const query: Record<string, string | number | boolean | undefined> = {
       limit: options?.limit !== undefined ? clampLimit(options.limit) : undefined,
       cursor: options?.cursor,
     };
-    if (options?.hydrate) query.full = "true";
+    if (options?.hydrate) query.hydrate = "true";
 
     if (options?.hydrate) {
       const raw = await this.#request<{
         v: string; ok: boolean;
         data: {
-          items: { key: string; data: T; meta: { warm: boolean; size: number; updated_at: number; sp: SP } }[];
+          items: { key: string; data: T }[];
           cursor: string | null;
         };
       }>(
@@ -283,7 +299,7 @@ export class FlexDBClient {
         options,
       );
       return {
-        items: raw.data.items.map((item) => ({ key: item.key, data: item.data, meta: mapMeta(item.meta) })),
+        items: raw.data.items.map((item) => ({ key: item.key, data: item.data })),
         cursor: raw.data.cursor,
       };
     }
@@ -329,24 +345,24 @@ export class FlexDBClient {
    */
   async search<T = unknown, SP extends SearchParams = SearchParams>(
     options: SearchOptions<SP> & { hydrate: true },
-  ): Promise<ListItemsResult<T, SP>>;
+  ): Promise<ListItemsResult<T>>;
 
   async search<T = unknown, SP extends SearchParams = SearchParams>(
     options: SearchOptions<SP>,
-  ): Promise<ListIdsResult | ListItemsResult<T, SP>> {
+  ): Promise<ListIdsResult | ListItemsResult<T>> {
     const ns = this.#ns(options);
     const body: Record<string, unknown> = {
       filters: filtersToArray(options.filters),
     };
     if (options.limit !== undefined) body.limit = clampLimit(options.limit);
     if (options.cursor !== undefined) body.cursor = options.cursor;
-    if (options.hydrate) body.full = true;
+    if (options.hydrate) body.hydrate = true;
 
     if (options.hydrate) {
       const raw = await this.#request<{
         v: string; ok: boolean;
         data: {
-          items: { key: string; data: T; meta: { warm: boolean; size: number; updated_at: number; sp: SP } }[];
+          items: { key: string; data: T }[];
           cursor: string | null;
         };
       }>(
@@ -354,7 +370,7 @@ export class FlexDBClient {
         options,
       );
       return {
-        items: raw.data.items.map((item) => ({ key: item.key, data: item.data, meta: mapMeta(item.meta) })),
+        items: raw.data.items.map((item) => ({ key: item.key, data: item.data })),
         cursor: raw.data.cursor,
       };
     }
@@ -378,8 +394,8 @@ export class FlexDBClient {
    * @example
    * ```ts
    * const { items } = await db.bulkGet<User>(["user:1", "user:2"], { namespace: "users" });
-   * for (const { key, data } of items) {
-   *   if (data) console.log(key, data.name);
+   * for (const item of items) {
+   *   if (item.ok) console.log(item.key, item.data!.name);
    * }
    * ```
    */
@@ -390,7 +406,7 @@ export class FlexDBClient {
     const ns = this.#ns(options);
     const raw = await this.#request<{
       v: string; ok: boolean;
-      data: { items: BulkGetItem<T>[] };
+      data: { items: { key: string; ok: boolean; data?: T }[] };
     }>(
       { method: "POST", path: "/v2/bulk/get", body: { ns, keys } },
       options,
@@ -401,20 +417,20 @@ export class FlexDBClient {
   // ── Bulk Create ───────────────────────────────────────────────────────────
 
   /**
-   * Creates multiple objects, only if their keys do not already exist.
-   * Existing keys are skipped and flagged with `conflict: true`.
+   * Creates multiple objects with server-generated keys.
+   * Response items are in the same order as the input items.
    *
    * @example
    * ```ts
-   * const { results } = await db.bulkCreate(
+   * const { items } = await db.bulkCreate(
    *   [
-   *     { key: "user:1", data: { name: "Alice" }, sp: { role: "admin" } },
-   *     { key: "user:2", data: { name: "Bob" } },
+   *     { data: { name: "Alice" }, sp: { role: "admin" } },
+   *     { data: { name: "Bob" } },
    *   ],
    *   { namespace: "users" },
    * );
-   * for (const r of results) {
-   *   if (r.conflict) console.log(r.key, "already exists");
+   * for (const r of items) {
+   *   if (r.ok) console.log(r.id);
    * }
    * ```
    */
@@ -425,7 +441,7 @@ export class FlexDBClient {
     const ns = this.#ns(options);
     const raw = await this.#request<{
       v: string; ok: boolean;
-      data: { key: string; ok: boolean; conflict: boolean }[];
+      data: { items: { ok: boolean; id?: string; error?: string }[] };
     }>(
       {
         method: "POST",
@@ -433,7 +449,7 @@ export class FlexDBClient {
         body: {
           ns,
           items: items.map((item) => {
-            const entry: Record<string, unknown> = { key: item.key, data: item.data };
+            const entry: Record<string, unknown> = { data: item.data };
             if (item.sp !== undefined) entry.sp = item.sp;
             return entry;
           }),
@@ -441,7 +457,7 @@ export class FlexDBClient {
       },
       options,
     );
-    return { results: raw.data };
+    return { items: raw.data.items };
   }
 
   // ── Bulk Set ──────────────────────────────────────────────────────────────
@@ -452,7 +468,7 @@ export class FlexDBClient {
    *
    * @example
    * ```ts
-   * const { results } = await db.bulkSet(
+   * const { items } = await db.bulkSet(
    *   [
    *     { key: "user:1", data: { name: "Alice" }, sp: { score: 42 } },
    *     { key: "user:2", data: { name: "Bob" } },
@@ -468,7 +484,7 @@ export class FlexDBClient {
     const ns = this.#ns(options);
     const raw = await this.#request<{
       v: string; ok: boolean;
-      data: { key: string; ok: boolean; error?: string }[];
+      data: { items: { ok: boolean; error?: string }[] };
     }>(
       {
         method: "POST",
@@ -484,7 +500,7 @@ export class FlexDBClient {
       },
       options,
     );
-    return { results: raw.data };
+    return { items: raw.data.items };
   }
 
   // ── Bulk Delete ───────────────────────────────────────────────────────────
@@ -550,11 +566,18 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
     this.#namespace = namespace;
   }
 
-  get<T = unknown, SP extends SearchParams = SearchParams>(
+  get<T = unknown>(
     key: string,
     options?: Omit<GetOptions, "namespace">,
-  ): Promise<GetResult<T, SP>> {
-    return this.#client.get<T, SP>(key, { ...options, namespace: this.#namespace });
+  ): Promise<GetResult<T>> {
+    return this.#client.get<T>(key, { ...options, namespace: this.#namespace });
+  }
+
+  create<T, SP extends SearchParams = DefaultSP>(
+    value: T,
+    options?: Omit<CreateOptions<SP>, "namespace">,
+  ): Promise<CreateResult> {
+    return this.#client.create<T, SP>(value, { ...options, namespace: this.#namespace });
   }
 
   set<T, SP extends SearchParams = DefaultSP>(
@@ -573,13 +596,13 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
   }
 
   list(options?: Omit<ListOptions, "namespace"> & { hydrate?: false }): Promise<ListIdsResult>;
-  list<T = unknown, SP extends SearchParams = SearchParams>(
+  list<T = unknown>(
     options: Omit<ListOptions, "namespace"> & { hydrate: true },
-  ): Promise<ListItemsResult<T, SP>>;
-  list<T = unknown, SP extends SearchParams = SearchParams>(
+  ): Promise<ListItemsResult<T>>;
+  list<T = unknown>(
     options?: Omit<ListOptions, "namespace">,
-  ): Promise<ListIdsResult | ListItemsResult<T, SP>> {
-    return this.#client.list<T, SP>({ ...options, namespace: this.#namespace } as any);
+  ): Promise<ListIdsResult | ListItemsResult<T>> {
+    return this.#client.list<T>({ ...options, namespace: this.#namespace } as any);
   }
 
   search<SP extends SearchParams = DefaultSP>(
@@ -587,10 +610,10 @@ export class NamespacedClient<DefaultSP extends SearchParams = SearchParams> {
   ): Promise<ListIdsResult>;
   search<T = unknown, SP extends SearchParams = DefaultSP>(
     options: Omit<SearchOptions<SP>, "namespace"> & { hydrate: true },
-  ): Promise<ListItemsResult<T, SP>>;
+  ): Promise<ListItemsResult<T>>;
   search<T = unknown, SP extends SearchParams = DefaultSP>(
     options: Omit<SearchOptions<SP>, "namespace">,
-  ): Promise<ListIdsResult | ListItemsResult<T, SP>> {
+  ): Promise<ListIdsResult | ListItemsResult<T>> {
     return this.#client.search<T, SP>({ ...options, namespace: this.#namespace } as any);
   }
 

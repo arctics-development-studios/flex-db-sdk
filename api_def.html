@@ -101,7 +101,7 @@
   <tbody>
     <tr><td>iss</td><td>string</td><td>Issuer, set from <code>JWT_ISSUER</code> env var</td></tr>
     <tr><td>iat</td><td>number</td><td>Issued-at unix timestamp (seconds)</td></tr>
-    <tr><td>exp</td><td>number</td><td>Expiry unix timestamp (seconds). Absent if the server is configured with no expiry (<code>JWT_TOKEN_EXPIRY_SECS=0</code>)</td></tr>
+    <tr><td>exp</td><td>number</td><td>Expiry unix timestamp (seconds). Absent if the token was created with <code>expiry_secs: null</code> (non-expiring token)</td></tr>
     <tr><td>jti</td><td>string</td><td>Unique token ID (nanoid-21). Used for revocation lookups.</td></tr>
     <tr><td>db_id</td><td>string</td><td>The database this token is scoped to</td></tr>
     <tr><td>perms</td><td>number</td><td>Permission bitmask (see below)</td></tr>
@@ -445,11 +445,19 @@
   </thead>
   <tbody>
     <tr><td>perms</td><td>number</td><td>Yes</td><td>Permission bitmask: <code>1</code> (READ), <code>2</code> (WRITE), or <code>3</code> (ALL)</td></tr>
+    <tr><td>expiry_secs</td><td>number | null</td><td>Yes</td><td>Token lifetime in seconds from issuance. Pass <code>null</code> for a non-expiring token. Must be present — omitting this field returns <code>422 ERR_UNPROCESSABLE_ENTITY</code>.</td></tr>
   </tbody>
 </table>
 
 <pre><code>{
-  "perms": 3
+  "perms": 3,
+  "expiry_secs": 604800
+}</code></pre>
+
+<p>Non-expiring token example:</p>
+<pre><code>{
+  "perms": 1,
+  "expiry_secs": null
 }</code></pre>
 
 <h4>Response — 201 Created</h4>
@@ -855,7 +863,7 @@
   </thead>
   <tbody>
     <tr><td>field</td><td>string</td><td>Yes</td><td>The <code>sp</code> field name to filter on</td></tr>
-    <tr><td>op</td><td>string</td><td>Yes</td><td>Comparison operator. One of: <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>contains</code>, <code>starts_with</code></td></tr>
+    <tr><td>op</td><td>string</td><td>Yes</td><td>Comparison operator. One of: <code>eq</code>, <code>neq</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, <code>lte</code>, <code>sw</code>, <code>ex</code></td></tr>
     <tr><td>value</td><td>scalar</td><td>Yes</td><td>The value to compare against. Must be a JSON scalar (string, number, or boolean).</td></tr>
   </tbody>
 </table>
@@ -1172,7 +1180,7 @@
 <p>A single filter condition used in the Search endpoint. Multiple filters are ANDed together.</p>
 <pre><code>{
   "field": "string — sp field name to filter on",
-  "op": "string — eq | ne | gt | gte | lt | lte | contains | starts_with",
+  "op": "string — eq | neq | gt | gte | lt | lte | sw | ex",
   "value": "string | number | boolean — scalar value to compare against"
 }</code></pre>
 

@@ -11,7 +11,7 @@
  * // deno.json
  * {
  *   "imports": {
- *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.5.0"
+ *     "@arctics/flex-db-sdk": "jsr:@arctics/flex-db-sdk@^2.6.0"
  *   }
  * }
  * ```
@@ -112,6 +112,7 @@ export type {
 
   // Operation options
   OperationOptions,
+  CreateOptions,
   SetOptions,
   GetOptions,
   DeleteOptions,
@@ -123,15 +124,13 @@ export type {
   Filters,
   FilterOperators,
 
-  // Metadata
-  ObjectMeta,
-
   // Bulk operation items
   BulkCreateItem,
   BulkSetItem,
 
   // Results
   HealthResult,
+  CreateResult,
   SetResult,
   GetResult,
   DeleteResult,

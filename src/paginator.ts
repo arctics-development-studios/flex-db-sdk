@@ -28,7 +28,7 @@
  * import { paginateListHydrated } from "@arctics/flex-db-sdk";
  *
  * for await (const page of paginateListHydrated<User>(db, { namespace: "users", limit: 50 })) {
- *   for (const { key, data, meta } of page.data) console.log(key, data.name);
+ *   for (const { key, data } of page.data) console.log(key, data.name);
  * }
  * ```
  *
@@ -48,7 +48,6 @@ import type {
   SearchParams,
   ListIdsResult,
   ListItemsResult,
-  ObjectMeta,
 } from "./types.ts";
 
 // ── Internal page-fetcher type ─────────────────────────────────────────────
@@ -179,27 +178,27 @@ export function paginateList(
 
 /**
  * Creates a {@link Paginator} that steps through {@link FlexDBClient.list} pages,
- * yielding arrays of **full objects** (with `key`, `data`, and `meta`).
+ * yielding arrays of **full objects** (with `key` and `data`).
  *
  * @example
  * ```ts
  * for await (const page of paginateListHydrated<User>(db, { namespace: "users", limit: 50 })) {
- *   for (const { key, data, meta } of page.data) console.log(key, data.name);
+ *   for (const { key, data } of page.data) console.log(key, data.name);
  * }
  * ```
  */
-export function paginateListHydrated<T = unknown, SP extends SearchParams = SearchParams>(
+export function paginateListHydrated<T = unknown>(
   client: AnyClient,
   options?: Omit<ListOptions, "cursor" | "hydrate">,
-): Paginator<{ key: string; data: T; meta: ObjectMeta<SP> }> {
-  const fetcher: PageFetcher<{ key: string; data: T; meta: ObjectMeta<SP> }> = async (cursor) => {
-    const result = await (client as FlexDBClient).list<T, SP>({
+): Paginator<{ key: string; data: T }> {
+  const fetcher: PageFetcher<{ key: string; data: T }> = async (cursor) => {
+    const result = await (client as FlexDBClient).list<T>({
       ...options,
       cursor,
       hydrate: true,
     } as ListOptions & { hydrate: true });
 
-    const r = result as ListItemsResult<T, SP>;
+    const r = result as ListItemsResult<T>;
     return { data: r.items, cursor: r.cursor };
   };
 
@@ -240,31 +239,31 @@ export function paginateSearch<SP extends SearchParams = SearchParams>(
 
 /**
  * Creates a {@link Paginator} that steps through {@link FlexDBClient.search} pages,
- * yielding arrays of **full objects** (with `key`, `data`, and `meta`).
+ * yielding arrays of **full objects** (with `key` and `data`).
  *
  * @example
  * ```ts
- * for await (const page of paginateSearchHydrated<User, UserSP>(db, {
+ * for await (const page of paginateSearchHydrated<User>(db, {
  *   namespace: "users",
  *   filters: { score: { gte: 1000 } },
  *   limit: 50,
  * })) {
- *   for (const { key, data, meta } of page.data) console.log(key, data.name);
+ *   for (const { key, data } of page.data) console.log(key, data.name);
  * }
  * ```
  */
-export function paginateSearchHydrated<T = unknown, SP extends SearchParams = SearchParams>(
+export function paginateSearchHydrated<T = unknown>(
   client: AnyClient,
-  options: Omit<SearchOptions<SP>, "cursor" | "hydrate">,
-): Paginator<{ key: string; data: T; meta: ObjectMeta<SP> }> {
-  const fetcher: PageFetcher<{ key: string; data: T; meta: ObjectMeta<SP> }> = async (cursor) => {
-    const result = await (client as FlexDBClient).search<T, SP>({
+  options: Omit<SearchOptions, "cursor" | "hydrate">,
+): Paginator<{ key: string; data: T }> {
+  const fetcher: PageFetcher<{ key: string; data: T }> = async (cursor) => {
+    const result = await (client as FlexDBClient).search({
       ...options,
       cursor,
       hydrate: true,
-    } as SearchOptions<SP> & { hydrate: true });
+    } as SearchOptions & { hydrate: true });
 
-    const r = result as ListItemsResult<T, SP>;
+    const r = result as ListItemsResult<T>;
     return { data: r.items, cursor: r.cursor };
   };
 

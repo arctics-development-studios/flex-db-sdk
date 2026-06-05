@@ -134,6 +134,14 @@ export type Filters<SP extends SearchParams = SearchParams> = {
 // ── CRUD Inputs ────────────────────────────────────────────────────────────
 
 /**
+ * Options for {@link FlexDBClient.create}.
+ */
+export interface CreateOptions<SP extends SearchParams = SearchParams> extends OperationOptions {
+  /** Search parameters to store alongside the object. */
+  sp?: SP;
+}
+
+/**
  * Options for {@link FlexDBClient.set}.
  */
 export interface SetOptions<SP extends SearchParams = SearchParams> extends OperationOptions {
@@ -189,21 +197,10 @@ export interface HealthResult {
   version: string;
 }
 
-/**
- * Metadata stored alongside every FlexDB object.
- *
- * | Field | Description |
- * |-------|-------------|
- * | `warm`      | `true` = DynamoDB (warm tier); `false` = S3 (cold tier). |
- * | `size`      | Serialised byte size of `data`. |
- * | `updatedAt` | Unix timestamp (seconds) of the last write. |
- * | `sp`        | Search parameters indexed at write-time. |
- */
-export interface ObjectMeta<SP extends SearchParams = SearchParams> {
-  warm: boolean;
-  size: number;
-  updatedAt: number;
-  sp: SP;
+/** Returned by {@link FlexDBClient.create}. */
+export interface CreateResult {
+  /** Server-generated nanoid(21) key. */
+  key: string;
 }
 
 /** Returned by {@link FlexDBClient.set}. */
@@ -212,10 +209,8 @@ export interface SetResult {
 }
 
 /** Returned by {@link FlexDBClient.get}. */
-export interface GetResult<T = unknown, SP extends SearchParams = SearchParams> {
-  key: string;
+export interface GetResult<T = unknown> {
   data: T;
-  meta: ObjectMeta<SP>;
 }
 
 /** Returned by {@link FlexDBClient.delete}. */
@@ -228,8 +223,8 @@ export interface ListIdsResult {
 }
 
 /** Returned by list/search when `hydrate: true`. */
-export interface ListItemsResult<T = unknown, SP extends SearchParams = SearchParams> {
-  items: { key: string; data: T; meta: ObjectMeta<SP> }[];
+export interface ListItemsResult<T = unknown> {
+  items: { key: string; data: T }[];
   cursor: string | null;
 }
 
@@ -242,11 +237,13 @@ export type ListResult<T = unknown, H extends boolean = false> =
 
 // ── Bulk Operations ───────────────────────────────────────────────────────
 
-/** A single item in a {@link FlexDBClient.bulkGet} request. */
+/** A single item in a {@link FlexDBClient.bulkGet} response. */
 export interface BulkGetItem<T = unknown> {
   key: string;
-  /** `null` if the key does not exist. */
-  data: T | null;
+  /** `true` when the object was found; `false` when the key does not exist. */
+  ok: boolean;
+  /** Present only when `ok` is `true`. */
+  data?: T;
 }
 
 /** Returned by {@link FlexDBClient.bulkGet}. */
@@ -254,13 +251,8 @@ export interface BulkGetResult<T = unknown> {
   items: BulkGetItem<T>[];
 }
 
-/**
- * A single item in a {@link FlexDBClient.bulkCreate} request.
- * The caller must supply the key — the server no longer generates keys.
- */
+/** A single item in a {@link FlexDBClient.bulkCreate} request. */
 export interface BulkCreateItem<T = unknown, SP extends SearchParams = SearchParams> {
-  /** The key to create. Fails with `conflict: true` if the key already exists. */
-  key: string;
   data: T;
   /** Search parameters to index for future queries. */
   sp?: SP;
@@ -268,15 +260,16 @@ export interface BulkCreateItem<T = unknown, SP extends SearchParams = SearchPar
 
 /** Per-item result in a {@link BulkCreateResult}. */
 export interface BulkCreateResultItem {
-  key: string;
   ok: boolean;
-  /** `true` if the key already existed and was not written. */
-  conflict: boolean;
+  /** Server-generated key. Present only when `ok` is `true`. */
+  id?: string;
+  /** Error message. Present only when `ok` is `false`. */
+  error?: string;
 }
 
 /** Returned by {@link FlexDBClient.bulkCreate}. */
 export interface BulkCreateResult {
-  results: BulkCreateResultItem[];
+  items: BulkCreateResultItem[];
 }
 
 /** A single item in a {@link FlexDBClient.bulkSet} request. */
@@ -289,7 +282,6 @@ export interface BulkSetItem<T = unknown, SP extends SearchParams = SearchParams
 
 /** Per-item result in a {@link BulkSetResult}. */
 export interface BulkSetResultItem {
-  key: string;
   ok: boolean;
   /** Present only when `ok` is `false`. */
   error?: string;
@@ -297,7 +289,7 @@ export interface BulkSetResultItem {
 
 /** Returned by {@link FlexDBClient.bulkSet}. */
 export interface BulkSetResult {
-  results: BulkSetResultItem[];
+  items: BulkSetResultItem[];
 }
 
 /** Returned by {@link FlexDBClient.bulkDelete}. */
